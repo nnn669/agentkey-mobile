@@ -5,12 +5,14 @@ import { Alert, FlatList, Modal, Pressable, StyleSheet, Switch, Text, TextInput,
 import { Badge, Card, COLORS, PrimaryButton } from "@/components/agent-ui";
 import { ScreenContainer } from "@/components/screen-container";
 import { useAgentState, type McpServer, type McpTool } from "@/lib/agent-state";
-import type { McpTransport } from "@/lib/mcp-logic";
+import { summarizeToolArguments, type McpTransport } from "@/lib/mcp-logic";
 
 export default function McpScreen() {
   const { mcpServers, mcpTools, mcpCalls, addMcpServer, removeMcpServer, testMcpServer, toggleMcpTool, callMcpTool } = useAgentState();
   const [serverModalVisible, setServerModalVisible] = useState(false);
   const [toolModal, setToolModal] = useState<McpTool | null>(null);
+  const [authorizationTool, setAuthorizationTool] = useState<McpTool | null>(null);
+  const [authorizationSummary, setAuthorizationSummary] = useState("");
   const [name, setName] = useState("");
   const [transport, setTransport] = useState<McpTransport>("http");
   const [endpoint, setEndpoint] = useState("");
@@ -31,10 +33,22 @@ export default function McpScreen() {
     setServerModalVisible(false);
   };
 
-  const executeTool = async () => {
+  const requestAuthorization = () => {
     if (!toolModal) return;
-    await callMcpTool(toolModal.id, argumentsText);
-    setToolModal(null);
+    try {
+      setAuthorizationSummary(summarizeToolArguments(argumentsText));
+      setAuthorizationTool(toolModal);
+      setToolModal(null);
+    } catch (error) {
+      Alert.alert("参数格式不正确", error instanceof Error ? error.message : "请检查 JSON 参数。" );
+    }
+  };
+
+  const executeAuthorizedTool = async () => {
+    if (!authorizationTool) return;
+    await callMcpTool(authorizationTool.id, argumentsText);
+    setAuthorizationTool(null);
+    setArgumentsText("{}");
   };
 
   return (
@@ -71,7 +85,8 @@ export default function McpScreen() {
         ListEmptyComponent={<Card style={styles.emptyCard}><MaterialIcons name="handyman" size={27} color={COLORS.muted} /><Text style={styles.emptyTitle}>尚未连接 MCP 服务</Text><Text style={styles.emptyText}>点击右上角添加您的 HTTP 或 SSE MCP 服务器，然后执行工具发现。</Text></Card>}
       />
       <ServerModal visible={serverModalVisible} name={name} transport={transport} endpoint={endpoint} messageEndpoint={messageEndpoint} authToken={authToken} onName={setName} onTransport={setTransport} onEndpoint={setEndpoint} onMessageEndpoint={setMessageEndpoint} onAuthToken={setAuthToken} onClose={() => setServerModalVisible(false)} onSave={() => void submitServer()} />
-      <ToolModal tool={toolModal} value={argumentsText} onChange={setArgumentsText} onClose={() => setToolModal(null)} onCall={() => void executeTool()} />
+      <ToolModal tool={toolModal} value={argumentsText} onChange={setArgumentsText} onClose={() => setToolModal(null)} onReview={requestAuthorization} />
+      <AuthorizationModal tool={authorizationTool} summary={authorizationSummary} onBack={() => { setToolModal(authorizationTool); setAuthorizationTool(null); }} onClose={() => setAuthorizationTool(null)} onAuthorize={() => void executeAuthorizedTool()} />
     </ScreenContainer>
   );
 }
@@ -101,8 +116,12 @@ function ServerModal({ visible, name, transport, endpoint, messageEndpoint, auth
   return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>添加 MCP 服务</Text><Text style={styles.sheetSub}>支持远程 HTTP JSON-RPC 与 SSE 服务。</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View><Text style={styles.fieldLabel}>传输方式</Text><View style={styles.transportRow}>{(["http", "sse"] as McpTransport[]).map((item) => <Pressable key={item} onPress={() => onTransport(item)} style={[styles.transportButton, transport === item && styles.transportButtonActive]}><Text style={[styles.transportText, transport === item && styles.transportTextActive]}>{item === "http" ? "HTTP" : "SSE"}</Text></Pressable>)}</View><Field label="服务名称" value={name} onChangeText={onName} placeholder="例如：团队工具服务" /><Field label={transport === "sse" ? "SSE 事件流地址" : "JSON-RPC 端点"} value={endpoint} onChangeText={onEndpoint} placeholder="https://mcp.example.com" autoCapitalize="none" />{transport === "sse" ? <Field label="消息发送端点" value={messageEndpoint} onChangeText={onMessageEndpoint} placeholder="https://mcp.example.com/message" autoCapitalize="none" /> : null}<Field label="Bearer Token（可选）" value={authToken} onChangeText={onAuthToken} placeholder="仅保存到设备安全存储" autoCapitalize="none" secureTextEntry /><PrimaryButton label="安全保存服务" icon="lock" onPress={onSave} /></View></View></Modal>;
 }
 
-function ToolModal({ tool, value, onChange, onClose, onCall }: { tool: McpTool | null; value: string; onChange: (value: string) => void; onClose: () => void; onCall: () => void }) {
-  return <Modal visible={Boolean(tool)} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>调用 {tool?.name ?? "工具"}</Text><Text numberOfLines={2} style={styles.sheetSub}>{tool?.description || "请输入符合服务端 Schema 的 JSON 参数。"}</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View><Text style={styles.fieldLabel}>JSON 参数</Text><TextInput multiline value={value} onChangeText={onChange} style={[styles.input, styles.argumentsInput]} placeholderTextColor="#7590A0" autoCapitalize="none" autoCorrect={false} textAlignVertical="top" /><Text style={styles.helper}>调用会向您配置的 MCP 服务发送请求。请勿输入不可信或不必要的敏感信息。</Text><PrimaryButton label="调用远程工具" icon="play-arrow" onPress={onCall} /></View></View></Modal>;
+function ToolModal({ tool, value, onChange, onClose, onReview }: { tool: McpTool | null; value: string; onChange: (value: string) => void; onClose: () => void; onReview: () => void }) {
+  return <Modal visible={Boolean(tool)} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>调用 {tool?.name ?? "工具"}</Text><Text numberOfLines={2} style={styles.sheetSub}>{tool?.description || "请输入符合服务端 Schema 的 JSON 参数。"}</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View><Text style={styles.fieldLabel}>JSON 参数</Text><TextInput multiline value={value} onChangeText={onChange} style={[styles.input, styles.argumentsInput]} placeholderTextColor="#7590A0" autoCapitalize="none" autoCorrect={false} textAlignVertical="top" /><Text style={styles.helper}>下一步会显示脱敏参数摘要。确认授权前不会向远程 MCP 服务发送请求。</Text><PrimaryButton label="审阅并授权" icon="verified-user" onPress={onReview} /></View></View></Modal>;
+}
+
+function AuthorizationModal({ tool, summary, onBack, onClose, onAuthorize }: { tool: McpTool | null; summary: string; onBack: () => void; onClose: () => void; onAuthorize: () => void }) {
+  return <Modal visible={Boolean(tool)} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>确认工具授权</Text><Text style={styles.sheetSub}>仅在您确认后，参数才会发送到所选 MCP 服务。</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View><View style={styles.securityCard}><View style={styles.securityIcon}><MaterialIcons name="verified-user" size={20} color={COLORS.amber} /></View><View style={styles.securityTextWrap}><Text style={styles.metaText}>即将调用</Text><Text style={styles.serverName}>{tool?.name}</Text></View></View><Text style={styles.fieldLabel}>参数摘要</Text><Text style={[styles.input, { paddingVertical: 12, lineHeight: 20, marginBottom: 8 }]}>{summary}</Text><Text style={styles.helper}>字段名称含 token、secret、password 或 API key 时会自动脱敏显示。请确认本次调用符合您的预期。</Text><PrimaryButton label="确认并调用" icon="play-arrow" onPress={onAuthorize} /><Pressable onPress={onBack} style={({ pressed }) => [styles.outlineButton, { marginTop: 10 }, pressed && styles.pressed]}><Text style={styles.outlineText}>返回修改参数</Text></Pressable></View></View></Modal>;
 }
 
 function Field({ label, ...props }: { label: string } & React.ComponentProps<typeof TextInput>) { return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><TextInput style={styles.input} placeholderTextColor="#7590A0" {...props} /></View>; }

@@ -4,7 +4,7 @@ import { Platform } from "react-native";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 
 import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy } from "@/lib/agent-logic";
-import { createRpcRequest, extractMcpTools, parseMcpEnvelope, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport } from "@/lib/mcp-logic";
+import { createMemoryBackup, createRpcRequest, extractMcpTools, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport } from "@/lib/mcp-logic";
 
 const STORAGE_KEY = "agentkey.public-config.v1";
 const SECRET_PREFIX = "agentkey.secret.";
@@ -117,6 +117,8 @@ export type MemoryEntry = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type MemoryImportMode = "merge" | "replace";
 
 export type McpCall = {
   id: string;
@@ -245,6 +247,8 @@ type AgentStateValue = {
   addMemory: (input: { title: string; content: string; category: string }) => void;
   updateMemory: (memoryId: string, patch: Partial<Pick<MemoryEntry, "title" | "content" | "category" | "enabled">>) => void;
   removeMemory: (memoryId: string) => void;
+  exportMemories: () => string;
+  importMemories: (raw: string, mode: MemoryImportMode) => number;
 };
 
 const AgentStateContext = createContext<AgentStateValue | undefined>(undefined);
@@ -580,6 +584,21 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     setMemories((current) => current.filter((memory) => memory.id !== memoryId));
   }, []);
 
+  const exportMemories = useCallback(() => createMemoryBackup(memories), [memories]);
+
+  const importMemories = useCallback((raw: string, mode: MemoryImportMode) => {
+    const parsed = parseMemoryBackup(raw);
+    const now = new Date().toISOString();
+    const imported = parsed.map((memory, index) => ({
+      ...memory,
+      id: `memory-import-${Date.now()}-${index}`,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    setMemories((current) => mode === "replace" ? imported : [...imported, ...current]);
+    return imported.length;
+  }, []);
+
   const runAgent = useCallback((prompt: string) => {
     const model = defaultModel;
     if (!model) return;
@@ -736,8 +755,10 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       addMemory,
       updateMemory,
       removeMemory,
+      exportMemories,
+      importMemories,
     }),
-    [addKey, addMcpServer, addMemory, addModel, addProvider, callMcpTool, clearRuns, cycleKeyStatus, defaultModel, hydrated, keys, mcpCalls, mcpServers, mcpTools, memories, models, providers, removeKey, removeMcpServer, removeMemory, removeModel, removeProvider, rule, runAgent, runs, testMcpServer, testProvider, toggleMcpTool, toggleProvider, updateMemory, updateModelRouting, updateRule],
+    [addKey, addMcpServer, addMemory, addModel, addProvider, callMcpTool, clearRuns, cycleKeyStatus, defaultModel, exportMemories, hydrated, importMemories, keys, mcpCalls, mcpServers, mcpTools, memories, models, providers, removeKey, removeMcpServer, removeMemory, removeModel, removeProvider, rule, runAgent, runs, testMcpServer, testProvider, toggleMcpTool, toggleProvider, updateMemory, updateModelRouting, updateRule],
   );
 
   return <AgentStateContext.Provider value={value}>{children}</AgentStateContext.Provider>;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, remainingCooldownSeconds, selectKey, shouldAutoCooldown, type KeyCandidate } from "../lib/agent-logic";
-import { createRpcRequest, extractMcpTools, parseMcpEnvelope, parseToolArguments, rankMemories } from "../lib/mcp-logic";
+import { createMemoryBackup, createRpcRequest, extractMcpTools, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
 
 const pool: KeyCandidate[] = [
   { id: "primary", priority: 1, usage: 18, status: "healthy" },
@@ -96,5 +96,22 @@ describe("MCP 工具与本地记忆", () => {
       { title: "隐藏信息", content: "MCP 密钥", enabled: false },
     ];
     expect(rankMemories(memories, "请用 MCP 检索项目文档").map((memory) => memory.title)).toEqual(["项目计划"]);
+  });
+
+  it("在授权前生成工具参数摘要，并脱敏敏感字段", () => {
+    expect(summarizeToolArguments('{"query":"季度报告","apiKey":"sk-should-hide","limit":5}')).toBe("query: “季度报告” · apiKey: [已脱敏] · limit: 5");
+    expect(summarizeToolArguments("{}")).toBe("无参数");
+  });
+
+  it("导出脱敏记忆备份且不携带运行时标识", () => {
+    const backup = JSON.parse(createMemoryBackup([{ title: "访问令牌", content: "token=top-secret-value", category: "安全", enabled: true }], "2026-08-12T00:00:00.000Z"));
+    expect(backup).toEqual({ schema: "agentkey.memory.v1", exportedAt: "2026-08-12T00:00:00.000Z", entries: [{ title: "访问令牌", content: "token=[已脱敏]", category: "安全", enabled: true }] });
+    expect(backup.entries[0]).not.toHaveProperty("id");
+  });
+
+  it("校验记忆备份格式并拒绝不受支持的数据", () => {
+    expect(parseMemoryBackup('{"schema":"agentkey.memory.v1","entries":[{"title":"偏好","content":"保持脱敏","category":"安全","enabled":true}]}')).toEqual([{ title: "偏好", content: "保持脱敏", category: "安全", enabled: true }]);
+    expect(() => parseMemoryBackup('{"schema":"unknown","entries":[]}')).toThrow("无法识别");
+    expect(() => parseMemoryBackup(JSON.stringify({ schema: "agentkey.memory.v1", entries: Array.from({ length: 201 }, () => ({ title: "x", content: "y" })) }))).toThrow("最多导入 200");
   });
 });

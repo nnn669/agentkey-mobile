@@ -57,6 +57,83 @@ export function parseToolArguments(raw: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+const SENSITIVE_FIELD = /token|secret|password|authorization|api[_-]?key|credential/i;
+
+export type MemoryBackupItem = {
+  title: string;
+  content: string;
+  category: string;
+  enabled: boolean;
+};
+
+export type MemoryBackup = {
+  schema: "agentkey.memory.v1";
+  exportedAt: string;
+  entries: MemoryBackupItem[];
+};
+
+function redactText(value: string) {
+  return value
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[已脱敏密钥]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]{8,}\b/gi, "Bearer [已脱敏]")
+    .replace(/\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[已脱敏]");
+}
+
+function summarizeValue(value: unknown) {
+  if (typeof value === "string") return value.length > 64 ? `“${value.slice(0, 61)}…”` : `“${value}”`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `数组(${value.length})`;
+  if (value && typeof value === "object") return `对象(${Object.keys(value).length})`;
+  return "null";
+}
+
+export function summarizeToolArguments(raw: string) {
+  const values = parseToolArguments(raw);
+  const items = Object.entries(values).map(([key, value]) => `${key}: ${SENSITIVE_FIELD.test(key) ? "[已脱敏]" : summarizeValue(value)}`);
+  return items.length ? items.join(" · ") : "无参数";
+}
+
+export function createMemoryBackup(entries: MemoryBackupItem[], exportedAt = new Date().toISOString()) {
+  const sanitized: MemoryBackup = {
+    schema: "agentkey.memory.v1",
+    exportedAt,
+    entries: entries
+      .filter((entry) => entry.title.trim() && entry.content.trim())
+      .map((entry) => ({
+        title: redactText(entry.title.trim()).slice(0, 120),
+        content: redactText(entry.content.trim()).slice(0, 4000),
+        category: redactText(entry.category.trim() || "未分类").slice(0, 60),
+        enabled: entry.enabled !== false,
+      })),
+  };
+  return JSON.stringify(sanitized, null, 2);
+}
+
+export function parseMemoryBackup(raw: string): MemoryBackupItem[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("备份文件不是有效的 JSON。");
+  }
+  if (!parsed || typeof parsed !== "object") throw new Error("备份内容格式不正确。");
+  const backup = parsed as Partial<MemoryBackup>;
+  if (backup.schema !== "agentkey.memory.v1" || !Array.isArray(backup.entries)) throw new Error("无法识别的 AgentKey 记忆备份格式。");
+  if (backup.entries.length > 200) throw new Error("单次最多导入 200 条记忆。");
+  const entries = backup.entries.map((entry) => {
+    if (!entry || typeof entry !== "object") throw new Error("备份中包含无效记忆项。");
+    const item = entry as Partial<MemoryBackupItem>;
+    if (typeof item.title !== "string" || typeof item.content !== "string" || !item.title.trim() || !item.content.trim()) throw new Error("每条记忆都需要标题和内容。");
+    return {
+      title: item.title.trim().slice(0, 120),
+      content: item.content.trim().slice(0, 4000),
+      category: typeof item.category === "string" && item.category.trim() ? item.category.trim().slice(0, 60) : "未分类",
+      enabled: item.enabled !== false,
+    };
+  });
+  return entries;
+}
+
 export function rankMemories<T extends { title: string; content: string; enabled: boolean }>(memories: T[], prompt: string, limit = 3) {
   const tokens = prompt.toLocaleLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter((token) => token.length > 1);
   return memories
