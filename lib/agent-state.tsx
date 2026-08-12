@@ -4,6 +4,7 @@ import { Platform } from "react-native";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 
 import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy } from "@/lib/agent-logic";
+import { createRpcRequest, extractMcpTools, parseMcpEnvelope, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport } from "@/lib/mcp-logic";
 
 const STORAGE_KEY = "agentkey.public-config.v1";
 const SECRET_PREFIX = "agentkey.secret.";
@@ -80,11 +81,61 @@ export type AgentRun = {
   steps: RunStep[];
 };
 
+export type McpDiagnostic = {
+  state: "idle" | "testing" | "healthy" | "error";
+  message: string;
+  checkedAt?: string;
+  latencyMs?: number;
+  statusCode?: number;
+};
+
+export type McpServer = {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  endpoint: string;
+  messageEndpoint?: string;
+  authSuffix?: string;
+  enabled: boolean;
+  diagnostic?: McpDiagnostic;
+};
+
+export type McpTool = McpToolDescriptor & {
+  id: string;
+  serverId: string;
+  enabled: boolean;
+  lastStatus?: "idle" | "running" | "success" | "error";
+  lastSummary?: string;
+};
+
+export type MemoryEntry = {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type McpCall = {
+  id: string;
+  serverId: string;
+  toolName: string;
+  status: "running" | "success" | "error";
+  summary: string;
+  createdAt: string;
+};
+
 type PersistedState = {
   providers: ApiProvider[];
   keys: KeyEntry[];
   rule: RoutingRule;
   runs: AgentRun[];
+  mcpServers: McpServer[];
+  mcpTools: McpTool[];
+  memories: MemoryEntry[];
+  mcpCalls: McpCall[];
 };
 
 const seedProviders: ApiProvider[] = [
@@ -149,6 +200,18 @@ const seedRule: RoutingRule = {
   cooldownSeconds: 45,
 };
 
+const seedMemories: MemoryEntry[] = [
+  {
+    id: "memory-agentkey-privacy",
+    title: "敏感信息处理偏好",
+    content: "在执行代理任务时，优先展示脱敏标识与执行摘要，不将密钥、认证令牌或完整请求体写入轨迹。",
+    category: "安全",
+    enabled: true,
+    createdAt: "2026-08-12T00:00:00.000Z",
+    updatedAt: "2026-08-12T00:00:00.000Z",
+  },
+];
+
 type AgentStateValue = {
   hydrated: boolean;
   providers: ApiProvider[];
@@ -170,6 +233,18 @@ type AgentStateValue = {
   runAgent: (prompt: string) => void;
   clearRuns: () => void;
   testProvider: (providerId: string, mode: ConnectionTestMode, modelId?: string) => Promise<void>;
+  mcpServers: McpServer[];
+  mcpTools: McpTool[];
+  memories: MemoryEntry[];
+  mcpCalls: McpCall[];
+  addMcpServer: (input: { name: string; transport: McpTransport; endpoint: string; messageEndpoint?: string; authToken?: string }) => Promise<boolean>;
+  removeMcpServer: (serverId: string) => Promise<void>;
+  testMcpServer: (serverId: string) => Promise<void>;
+  toggleMcpTool: (toolId: string) => void;
+  callMcpTool: (toolId: string, rawArguments: string) => Promise<void>;
+  addMemory: (input: { title: string; content: string; category: string }) => void;
+  updateMemory: (memoryId: string, patch: Partial<Pick<MemoryEntry, "title" | "content" | "category" | "enabled">>) => void;
+  removeMemory: (memoryId: string) => void;
 };
 
 const AgentStateContext = createContext<AgentStateValue | undefined>(undefined);
@@ -207,6 +282,10 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
   const [keys, setKeys] = useState<KeyEntry[]>(seedKeys);
   const [rule, setRule] = useState<RoutingRule>(seedRule);
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [mcpTools, setMcpTools] = useState<McpTool[]>([]);
+  const [memories, setMemories] = useState<MemoryEntry[]>(seedMemories);
+  const [mcpCalls, setMcpCalls] = useState<McpCall[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -220,6 +299,10 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
         if (parsed.keys?.length) setKeys(parsed.keys);
         if (parsed.rule) setRule(parsed.rule);
         if (parsed.runs) setRuns(parsed.runs);
+        if (parsed.mcpServers) setMcpServers(parsed.mcpServers);
+        if (parsed.mcpTools) setMcpTools(parsed.mcpTools);
+        if (parsed.memories) setMemories(parsed.memories);
+        if (parsed.mcpCalls) setMcpCalls(parsed.mcpCalls);
       } finally {
         setHydrated(true);
       }
@@ -231,9 +314,9 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!hydrated) return;
 
-    const payload: PersistedState = { providers, keys, rule, runs };
+    const payload: PersistedState = { providers, keys, rule, runs, mcpServers, mcpTools, memories, mcpCalls };
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [hydrated, keys, providers, rule, runs]);
+  }, [hydrated, keys, mcpCalls, mcpServers, mcpTools, memories, providers, rule, runs]);
 
   useEffect(() => {
     const restoreExpiredKeys = () => {
@@ -365,6 +448,138 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     setRule((current) => ({ ...current, ...patch }));
   }, []);
 
+  const addMcpServer = useCallback(async (input: { name: string; transport: McpTransport; endpoint: string; messageEndpoint?: string; authToken?: string }) => {
+    const name = input.name.trim();
+    const endpoint = input.endpoint.trim();
+    const messageEndpoint = input.messageEndpoint?.trim();
+    if (!name || !endpoint || (input.transport === "sse" && !messageEndpoint)) return false;
+
+    const id = `mcp-${Date.now()}`;
+    const authToken = input.authToken?.trim();
+    if (authToken) await storeSecret(`mcp-${id}`, authToken);
+    setMcpServers((current) => [
+      ...current,
+      {
+        id,
+        name,
+        transport: input.transport,
+        endpoint,
+        messageEndpoint: input.transport === "sse" ? messageEndpoint : undefined,
+        authSuffix: authToken ? authToken.slice(-4).toUpperCase() : undefined,
+        enabled: true,
+        diagnostic: { state: "idle", message: "尚未连接" },
+      },
+    ]);
+    return true;
+  }, []);
+
+  const removeMcpServer = useCallback(async (serverId: string) => {
+    await deleteSecret(`mcp-${serverId}`);
+    setMcpServers((current) => current.filter((server) => server.id !== serverId));
+    setMcpTools((current) => current.filter((tool) => tool.serverId !== serverId));
+    setMcpCalls((current) => current.filter((call) => call.serverId !== serverId));
+  }, []);
+
+  const requestMcp = useCallback(async (server: McpServer, method: string, params?: Record<string, unknown>) => {
+    const endpoint = server.transport === "sse" ? server.messageEndpoint : server.endpoint;
+    if (!endpoint) throw new Error("SSE 服务需要提供消息端点才能发送 JSON-RPC 请求。");
+    const token = await readSecret(`mcp-${server.id}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(createRpcRequest(Date.now(), method, params)),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`MCP 服务返回 HTTP ${response.status}${text ? `：${text.slice(0, 120)}` : ""}`);
+      return { envelope: parseMcpEnvelope(text), statusCode: response.status };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }, []);
+
+  const testMcpServer = useCallback(async (serverId: string) => {
+    const server = mcpServers.find((item) => item.id === serverId);
+    if (!server) return;
+    const startedAt = Date.now();
+    const checkedAt = new Date().toISOString();
+    const updateDiagnostic = (diagnostic: McpDiagnostic) => setMcpServers((current) => current.map((item) => item.id === serverId ? { ...item, diagnostic } : item));
+    updateDiagnostic({ state: "testing", message: `正在发现 ${server.transport.toUpperCase()} MCP 工具…` });
+    try {
+      if (server.transport === "sse") {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4_000);
+        const token = await readSecret(`mcp-${server.id}`);
+        try {
+          const streamResponse = await fetch(server.endpoint, { headers: { Accept: "text/event-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: controller.signal });
+          if (!streamResponse.ok) throw new Error(`SSE 事件流返回 HTTP ${streamResponse.status}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+      const { envelope, statusCode } = await requestMcp(server, "tools/list");
+      const discovered = extractMcpTools(envelope);
+      setMcpTools((current) => [
+        ...current.filter((tool) => tool.serverId !== serverId),
+        ...discovered.map((tool) => ({ id: `${serverId}:${tool.name}`, serverId, ...tool, enabled: true, lastStatus: "idle" as const })),
+      ]);
+      updateDiagnostic({ state: "healthy", message: `连接成功，已发现 ${discovered.length} 个工具`, checkedAt, latencyMs: Date.now() - startedAt, statusCode });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "无法连接 MCP 服务。";
+      updateDiagnostic({ state: "error", message: message.slice(0, 180), checkedAt });
+    }
+  }, [mcpServers, requestMcp]);
+
+  const toggleMcpTool = useCallback((toolId: string) => {
+    setMcpTools((current) => current.map((tool) => tool.id === toolId ? { ...tool, enabled: !tool.enabled } : tool));
+  }, []);
+
+  const callMcpTool = useCallback(async (toolId: string, rawArguments: string) => {
+    const tool = mcpTools.find((item) => item.id === toolId);
+    const server = tool ? mcpServers.find((item) => item.id === tool.serverId) : undefined;
+    if (!tool || !server) return;
+    const callId = `mcp-call-${Date.now()}`;
+    const createdAt = new Date().toISOString();
+    const updateTool = (patch: Partial<McpTool>) => setMcpTools((current) => current.map((item) => item.id === toolId ? { ...item, ...patch } : item));
+    setMcpCalls((current) => [{ id: callId, serverId: server.id, toolName: tool.name, status: "running" as const, summary: "正在调用…", createdAt }, ...current].slice(0, 30));
+    updateTool({ lastStatus: "running", lastSummary: "正在调用…" });
+    try {
+      const argumentsValue = parseToolArguments(rawArguments);
+      const { envelope } = await requestMcp(server, "tools/call", { name: tool.name, arguments: argumentsValue });
+      if (envelope.error) throw new Error(envelope.error.message || "工具调用失败。");
+      const summary = "调用完成，结果已由 MCP 服务返回。";
+      updateTool({ lastStatus: "success", lastSummary: summary });
+      setMcpCalls((current) => current.map((call) => call.id === callId ? { ...call, status: "success", summary } : call));
+    } catch (error) {
+      const summary = error instanceof Error ? error.message.slice(0, 180) : "工具调用失败。";
+      updateTool({ lastStatus: "error", lastSummary: summary });
+      setMcpCalls((current) => current.map((call) => call.id === callId ? { ...call, status: "error", summary } : call));
+    }
+  }, [mcpServers, mcpTools, requestMcp]);
+
+  const addMemory = useCallback((input: { title: string; content: string; category: string }) => {
+    const title = input.title.trim();
+    const content = input.content.trim();
+    if (!title || !content) return;
+    const now = new Date().toISOString();
+    setMemories((current) => [{ id: `memory-${Date.now()}`, title, content, category: input.category.trim() || "未分类", enabled: true, createdAt: now, updatedAt: now }, ...current]);
+  }, []);
+
+  const updateMemory = useCallback((memoryId: string, patch: Partial<Pick<MemoryEntry, "title" | "content" | "category" | "enabled">>) => {
+    setMemories((current) => current.map((memory) => memory.id === memoryId ? { ...memory, ...patch, updatedAt: new Date().toISOString() } : memory));
+  }, []);
+
+  const removeMemory = useCallback((memoryId: string) => {
+    setMemories((current) => current.filter((memory) => memory.id !== memoryId));
+  }, []);
+
   const runAgent = useCallback((prompt: string) => {
     const model = defaultModel;
     if (!model) return;
@@ -380,6 +595,8 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       ? selectKey(modelKeys.filter((key) => key.id !== selected.id), strategy, selected.id)
       : undefined;
     const usedKey = alternate ?? selected;
+    const matchedMemories = rankMemories(memories, prompt);
+    const enabledToolCount = mcpTools.filter((tool) => tool.enabled && mcpServers.some((server) => server.id === tool.serverId && server.enabled)).length;
     setProviders((current) => current.map((provider) => ({
       ...provider,
       models: provider.models.map((item) => item.id === model.id ? { ...item, lastRoutedKeyId: usedKey.id } : item),
@@ -395,6 +612,8 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       createdAt: new Date().toISOString(),
       steps: [
         { id: "plan", title: "解析任务", detail: "已生成本地执行计划", state: "complete" },
+        ...(matchedMemories.length ? [{ id: "memory", title: "检索本地记忆", detail: `已引用：${matchedMemories.map((memory) => memory.title).join("、")}`, state: "complete" as const }] : []),
+        ...(enabledToolCount ? [{ id: "mcp", title: "准备 MCP 工具", detail: `${enabledToolCount} 个已启用工具可供本次任务调用`, state: "complete" as const }] : []),
         {
           id: "route",
           title: "选择模型与密钥",
@@ -423,7 +642,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       );
       setKeys((current) => current.map((key) => (key.id === usedKey.id ? { ...key, usage: key.usage + 1 } : key)));
     }, 750);
-  }, [defaultModel, keys, rule.strategy]);
+  }, [defaultModel, keys, mcpServers, mcpTools, memories, rule.strategy]);
 
   const clearRuns = useCallback(() => setRuns([]), []);
 
@@ -505,8 +724,20 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       runAgent,
       clearRuns,
       testProvider,
+      mcpServers,
+      mcpTools,
+      memories,
+      mcpCalls,
+      addMcpServer,
+      removeMcpServer,
+      testMcpServer,
+      toggleMcpTool,
+      callMcpTool,
+      addMemory,
+      updateMemory,
+      removeMemory,
     }),
-    [addKey, addModel, addProvider, clearRuns, cycleKeyStatus, defaultModel, hydrated, keys, models, providers, removeKey, removeModel, removeProvider, rule, runAgent, runs, testProvider, toggleProvider, updateModelRouting, updateRule],
+    [addKey, addMcpServer, addMemory, addModel, addProvider, callMcpTool, clearRuns, cycleKeyStatus, defaultModel, hydrated, keys, mcpCalls, mcpServers, mcpTools, memories, models, providers, removeKey, removeMcpServer, removeMemory, removeModel, removeProvider, rule, runAgent, runs, testMcpServer, testProvider, toggleMcpTool, toggleProvider, updateMemory, updateModelRouting, updateRule],
   );
 
   return <AgentStateContext.Provider value={value}>{children}</AgentStateContext.Provider>;

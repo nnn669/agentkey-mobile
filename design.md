@@ -64,6 +64,21 @@
 
 `Provider` 增加 `health`、`lastTestedAt`、`latencyMs` 与 `lastDiagnostic` 字段；`KeyEntry` 增加 `failureCount`、`cooldownUntil`、`cooldownReason`、`lastUsedAt` 字段。冷却状态由 `cooldownUntil` 推导，并不会自动执行后台轮询；应用在用户打开页面、发起任务、手动测试或再次读取密钥池时恢复到期密钥。这种方式避免了在没有用户明确配置后台服务时持续请求第三方接口。
 
+## MCP 工具与本地记忆
+
+MCP 工具中心仅管理用户在应用内添加的远程服务，不读取或复用任何个人连接器。服务地址、传输类型和认证令牌均由用户显式配置；令牌只保存至设备安全存储，列表仅显示认证状态及尾号。HTTP 服务以 JSON-RPC 请求执行初始化、工具发现与工具调用；SSE 服务保存事件流地址及服务端消息端点，并仅在应用前台进行一次性连接测试，不建立后台常驻连接。
+
+| 实体 | 关键字段 | 用途 |
+| --- | --- | --- |
+| McpServer | id、name、transport、endpoint、messageEndpoint、enabled、diagnostic | 用户自有 HTTP 或 SSE MCP 服务的非敏感配置及连接状态 |
+| McpTool | id、serverId、name、description、inputSchema、enabled、lastStatus | 服务端 `tools/list` 发现的工具及其启用状态 |
+| MemoryEntry | id、title、content、category、enabled、createdAt、updatedAt | 设备本地保存、可检索的代理记忆 |
+| McpCall | id、serverId、toolName、status、summary、createdAt | 不含凭据或完整请求体的工具调用审计记录 |
+
+用户新增服务时选择 **HTTP** 或 **SSE**。HTTP 服务使用配置的端点执行 JSON-RPC 初始化及 `tools/list`；SSE 服务前台读取事件流响应，并使用服务端给出的消息端点发送同样的 JSON-RPC 请求。每次请求都有超时控制，错误只记录 HTTP 状态和脱敏摘要。调用工具前，用户必须选择工具并输入与该工具 JSON Schema 对应的 JSON 参数。
+
+记忆库允许用户创建、编辑、分类、启用或删除记忆。代理任务仅引用已启用且与输入关键词匹配的少量本地记忆；任务轨迹仅列出引用的标题，不展示完整私密内容。记忆默认使用设备本地持久化保存，删除时立即从本地状态移除。
+
 ## 视觉语言
 
 品牌以深色控制台视觉表达“可靠调度”，并以高亮蓝绿色提示可用和执行中状态。页面采用高对比的卡片层级、大号指标数字和紧凑的状态徽章。

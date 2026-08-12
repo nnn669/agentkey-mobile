@@ -31,8 +31,10 @@ export default function TabLayout() {
       <Tabs.Screen name="index" options={{ title: "工作台", tabBarIcon: ({ color }) => <IconSymbol size={25} name="house.fill" color={color} /> }} />
       <Tabs.Screen name="tasks" options={{ title: "任务", tabBarIcon: ({ color }) => <IconSymbol size={25} name="sparkles" color={color} /> }} />
       <Tabs.Screen name="providers" options={{ title: "API", tabBarIcon: ({ color }) => <IconSymbol size={25} name="server.rack" color={color} /> }} />
-      <Tabs.Screen name="keys" options={{ title: "密钥池", tabBarIcon: ({ color }) => <IconSymbol size={25} name="key.fill" color={color} /> }} />
-      <Tabs.Screen name="rules" options={{ title: "规则", tabBarIcon: ({ color }) => <IconSymbol size={25} name="arrow.triangle.2.circlepath" color={color} /> }} />
+      <Tabs.Screen name="mcp" options={{ title: "MCP", tabBarIcon: ({ color }) => <IconSymbol size={25} name="wrench.and.screwdriver.fill" color={color} /> }} />
+      <Tabs.Screen name="memory" options={{ title: "记忆", tabBarIcon: ({ color }) => <IconSymbol size={25} name="brain.head.profile" color={color} /> }} />
+      <Tabs.Screen name="keys" options={{ href: null }} />
+      <Tabs.Screen name="rules" options={{ href: null }} />
     </Tabs>
   );
 }

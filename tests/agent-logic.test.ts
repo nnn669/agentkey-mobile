@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, remainingCooldownSeconds, selectKey, shouldAutoCooldown, type KeyCandidate } from "../lib/agent-logic";
+import { createRpcRequest, extractMcpTools, parseMcpEnvelope, parseToolArguments, rankMemories } from "../lib/mcp-logic";
 
 const pool: KeyCandidate[] = [
   { id: "primary", priority: 1, usage: 18, status: "healthy" },
@@ -68,5 +69,32 @@ describe("密钥自动冷却", () => {
     expect(shouldAutoCooldown({ failureCount: 2, failureThreshold: 2, usage: 10, quota: 100 })).toBe(true);
     expect(shouldAutoCooldown({ failureCount: 0, failureThreshold: 2, usage: 100, quota: 100 })).toBe(true);
     expect(shouldAutoCooldown({ failureCount: 1, failureThreshold: 2, usage: 99, quota: 100 })).toBe(false);
+  });
+});
+
+describe("MCP 工具与本地记忆", () => {
+  it("创建兼容 JSON-RPC 的 MCP 请求", () => {
+    expect(createRpcRequest(8, "tools/list")).toEqual({ jsonrpc: "2.0", id: 8, method: "tools/list" });
+    expect(createRpcRequest(9, "tools/call", { name: "search" }).params).toEqual({ name: "search" });
+  });
+
+  it("从 HTTP 或 SSE 数据行中解析 MCP 响应并发现工具", () => {
+    const parsed = parseMcpEnvelope("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"tools\":[{\"name\":\"search_docs\",\"description\":\"检索文档\"}]}}\n\n");
+    expect(extractMcpTools(parsed)).toEqual([{ name: "search_docs", description: "检索文档", inputSchema: undefined }]);
+  });
+
+  it("拒绝无法解析的响应及非对象工具参数", () => {
+    expect(() => parseMcpEnvelope("not-json")).toThrow("无法解析");
+    expect(() => parseToolArguments("[]")).toThrow("JSON 对象");
+    expect(parseToolArguments("")).toEqual({});
+  });
+
+  it("仅检索已启用且与任务匹配的本地记忆", () => {
+    const memories = [
+      { title: "安全偏好", content: "API 密钥需要脱敏", enabled: true },
+      { title: "项目计划", content: "使用 MCP 工具检索文档", enabled: true },
+      { title: "隐藏信息", content: "MCP 密钥", enabled: false },
+    ];
+    expect(rankMemories(memories, "请用 MCP 检索项目文档").map((memory) => memory.title)).toEqual(["项目计划"]);
   });
 });

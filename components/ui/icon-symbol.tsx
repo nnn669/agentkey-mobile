@@ -17,6 +17,8 @@ const MAPPING = {
   "server.rack": "dns",
   "key.fill": "vpn-key",
   "arrow.triangle.2.circlepath": "sync",
+  "wrench.and.screwdriver.fill": "handyman",
+  "brain.head.profile": "psychology",
 } as IconMapping;
 
 export function IconSymbol({ name, size = 24, color, style }: { name: IconSymbolName; size?: number; color: string | OpaqueColorValue; style?: StyleProp<TextStyle>; weight?: SymbolWeight }) {
