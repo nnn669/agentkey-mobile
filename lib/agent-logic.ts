@@ -28,7 +28,18 @@ export function shouldAutoCooldown({ failureCount, failureThreshold, usage, quot
   return failureCount >= failureThreshold || usage >= quota;
 }
 
-export function selectKey<T extends KeyCandidate>(keys: T[], strategy: RoutingStrategy): T | undefined {
+function sortStable<T extends KeyCandidate>(keys: T[]) {
+  return [...keys].sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
+}
+
+export function selectRoundRobin<T extends KeyCandidate>(keys: T[], lastRoutedKeyId?: string): T | undefined {
+  const available = sortStable(keys.filter((key) => key.status === "healthy" && !isCooldownActive(key.cooldownUntil)));
+  if (!available.length) return undefined;
+  const lastIndex = available.findIndex((key) => key.id === lastRoutedKeyId);
+  return available[(lastIndex + 1 + available.length) % available.length];
+}
+
+export function selectKey<T extends KeyCandidate>(keys: T[], strategy: RoutingStrategy, lastRoutedKeyId?: string): T | undefined {
   const available = keys.filter((key) => key.status === "healthy" && !isCooldownActive(key.cooldownUntil));
 
   if (!available.length) return undefined;
@@ -38,7 +49,7 @@ export function selectKey<T extends KeyCandidate>(keys: T[], strategy: RoutingSt
   }
 
   if (strategy === "roundRobin") {
-    return [...available].sort((a, b) => a.usage - b.usage || a.id.localeCompare(b.id))[0];
+    return selectRoundRobin(available, lastRoutedKeyId);
   }
 
   return [...available].sort((a, b) => a.priority - b.priority || a.usage - b.usage)[0];

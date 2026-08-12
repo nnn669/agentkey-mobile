@@ -14,6 +14,8 @@ export type ModelProfile = {
   modelId: string;
   label: string;
   enabled: boolean;
+  routingStrategy?: RoutingStrategy;
+  lastRoutedKeyId?: string;
 };
 
 export type ApiProvider = {
@@ -156,14 +158,18 @@ type AgentStateValue = {
   models: ModelProfile[];
   defaultModel?: ModelProfile;
   addProvider: (name: string, baseUrl: string, modelLabel: string) => void;
+  addModel: (providerId: string, modelLabel: string) => void;
+  removeModel: (modelId: string) => Promise<void>;
+  updateModelRouting: (modelId: string, strategy: RoutingStrategy) => void;
   toggleProvider: (providerId: string) => void;
   removeProvider: (providerId: string) => void;
   addKey: (modelProfileId: string, label: string, secret: string) => Promise<boolean>;
+  removeKey: (keyId: string) => Promise<void>;
   cycleKeyStatus: (keyId: string) => void;
   updateRule: (patch: Partial<RoutingRule>) => void;
   runAgent: (prompt: string) => void;
   clearRuns: () => void;
-  testProvider: (providerId: string, mode: ConnectionTestMode) => Promise<void>;
+  testProvider: (providerId: string, mode: ConnectionTestMode, modelId?: string) => Promise<void>;
 };
 
 const AgentStateContext = createContext<AgentStateValue | undefined>(undefined);
@@ -186,6 +192,14 @@ async function storeSecret(keyId: string, secret: string) {
 async function readSecret(keyId: string) {
   if (Platform.OS === "web") return AsyncStorage.getItem(secretStorageKey(keyId));
   return SecureStore.getItemAsync(secretStorageKey(keyId));
+}
+
+async function deleteSecret(keyId: string) {
+  if (Platform.OS === "web") {
+    await AsyncStorage.removeItem(secretStorageKey(keyId));
+    return;
+  }
+  await SecureStore.deleteItemAsync(secretStorageKey(keyId));
 }
 
 export function AgentStateProvider({ children }: PropsWithChildren) {
@@ -262,6 +276,36 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     setRule((current) => (current.defaultModelId ? current : { ...current, defaultModelId: modelId }));
   }, []);
 
+  const addModel = useCallback((providerId: string, modelLabel: string) => {
+    const trimmedLabel = modelLabel.trim();
+    if (!trimmedLabel) return;
+    const modelId = `model-${Date.now()}`;
+    const newModel: ModelProfile = {
+      id: modelId,
+      providerId,
+      modelId: trimmedLabel.toLowerCase().replace(/\s+/g, "-"),
+      label: trimmedLabel,
+      enabled: true,
+      routingStrategy: "roundRobin",
+    };
+    setProviders((current) => current.map((provider) => provider.id === providerId ? { ...provider, models: [...provider.models, newModel] } : provider));
+  }, []);
+
+  const removeModel = useCallback(async (modelId: string) => {
+    const relatedKeyIds = keys.filter((key) => key.modelProfileId === modelId).map((key) => key.id);
+    await Promise.all(relatedKeyIds.map(deleteSecret));
+    setKeys((current) => current.filter((key) => key.modelProfileId !== modelId));
+    setProviders((current) => current.map((provider) => ({ ...provider, models: provider.models.filter((model) => model.id !== modelId) })));
+    setRule((current) => current.defaultModelId === modelId ? { ...current, defaultModelId: "" } : current);
+  }, [keys]);
+
+  const updateModelRouting = useCallback((modelId: string, strategy: RoutingStrategy) => {
+    setProviders((current) => current.map((provider) => ({
+      ...provider,
+      models: provider.models.map((model) => model.id === modelId ? { ...model, routingStrategy: strategy, lastRoutedKeyId: undefined } : model),
+    })));
+  }, []);
+
   const toggleProvider = useCallback((providerId: string) => {
     setProviders((current) =>
       current.map((provider) =>
@@ -271,9 +315,11 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
   }, []);
 
   const removeProvider = useCallback((providerId: string) => {
+    const relatedKeyIds = keys.filter((key) => providers.find((provider) => provider.id === providerId)?.models.some((model) => model.id === key.modelProfileId)).map((key) => key.id);
+    void Promise.all(relatedKeyIds.map(deleteSecret));
     setProviders((current) => current.filter((provider) => provider.id !== providerId));
     setKeys((current) => current.filter((key) => !providers.find((provider) => provider.id === providerId)?.models.some((model) => model.id === key.modelProfileId)));
-  }, [providers]);
+  }, [keys, providers]);
 
   const addKey = useCallback(async (modelProfileId: string, label: string, secret: string) => {
     const normalizedSecret = secret.trim();
@@ -297,6 +343,15 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     return true;
   }, []);
 
+  const removeKey = useCallback(async (keyId: string) => {
+    await deleteSecret(keyId);
+    setKeys((current) => current.filter((key) => key.id !== keyId));
+    setProviders((current) => current.map((provider) => ({
+      ...provider,
+      models: provider.models.map((model) => model.lastRoutedKeyId === keyId ? { ...model, lastRoutedKeyId: undefined } : model),
+    })));
+  }, []);
+
   const cycleKeyStatus = useCallback((keyId: string) => {
     const next: Record<KeyStatus, KeyStatus> = {
       healthy: "cooling",
@@ -315,15 +370,20 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     if (!model) return;
 
     const modelKeys = keys.filter((key) => key.modelProfileId === model.id);
-    const selected = selectKey(modelKeys, rule.strategy);
+    const strategy = model.routingStrategy ?? rule.strategy;
+    const selected = selectKey(modelKeys, strategy, model.lastRoutedKeyId);
     if (!selected) return;
 
     const lowerPrompt = prompt.toLocaleLowerCase();
     const shouldFailover = lowerPrompt.includes("备用") || lowerPrompt.includes("故障");
     const alternate = shouldFailover
-      ? selectKey(modelKeys.filter((key) => key.id !== selected.id), rule.strategy)
+      ? selectKey(modelKeys.filter((key) => key.id !== selected.id), strategy, selected.id)
       : undefined;
     const usedKey = alternate ?? selected;
+    setProviders((current) => current.map((provider) => ({
+      ...provider,
+      models: provider.models.map((item) => item.id === model.id ? { ...item, lastRoutedKeyId: usedKey.id } : item),
+    })));
     const runId = `run-${Date.now()}`;
     const run: AgentRun = {
       id: runId,
@@ -338,7 +398,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
         {
           id: "route",
           title: "选择模型与密钥",
-          detail: `${model.label} · ••••${usedKey.suffix}`,
+          detail: `${model.label} · ${getStrategyLabel(strategy)} · ••••${usedKey.suffix}`,
           state: alternate ? "warning" : "complete",
         },
         { id: "execute", title: "执行代理步骤", detail: "正在模拟兼容 API 调用", state: "running" },
@@ -367,13 +427,15 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
 
   const clearRuns = useCallback(() => setRuns([]), []);
 
-  const testProvider = useCallback(async (providerId: string, mode: ConnectionTestMode) => {
+  const testProvider = useCallback(async (providerId: string, mode: ConnectionTestMode, modelId?: string) => {
     const provider = providers.find((item) => item.id === providerId);
     if (!provider) return;
+    const targetModel = provider.models.find((model) => model.id === modelId) ?? provider.models[0];
+    if (!targetModel) return;
     const checkedAt = new Date().toISOString();
     const updateDiagnostic = (diagnostic: ProviderDiagnostic) => setProviders((current) => current.map((item) => item.id === providerId ? { ...item, diagnostic } : item));
-    updateDiagnostic({ state: "testing", mode, message: mode === "direct" ? "正在向兼容模型端点发起轻量请求…" : "正在运行本地模拟诊断…" });
-    const providerKey = keys.find((key) => provider.models.some((model) => model.id === key.modelProfileId) && key.status === "healthy" && !isCooldownActive(key.cooldownUntil));
+    updateDiagnostic({ state: "testing", mode, message: mode === "direct" ? `正在测试 ${targetModel.label} 的兼容端点…` : `正在诊断 ${targetModel.label} 的本地路由…` });
+    const providerKey = keys.find((key) => key.modelProfileId === targetModel.id && key.status === "healthy" && !isCooldownActive(key.cooldownUntil));
     const applyFailure = (reason: CooldownReason, message: string, statusCode?: number) => {
       updateDiagnostic({ state: "error", mode, message, checkedAt, statusCode });
       if (!providerKey) return;
@@ -391,7 +453,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
         if (sample.includes("authfail")) applyFailure("认证失败", "模拟诊断：认证被服务端拒绝", 401);
         else if (sample.includes("ratelimit")) applyFailure("请求限流", "模拟诊断：服务端返回限流", 429);
         else if (sample.includes("timeout") || sample.includes("offline")) applyFailure("连续失败", "模拟诊断：连接超时");
-        else updateDiagnostic({ state: "healthy", mode, message: "模拟诊断通过：兼容端点可用", checkedAt, latencyMs: 126, statusCode: 200 });
+        else updateDiagnostic({ state: "healthy", mode, message: `模拟诊断通过：${targetModel.label} 的兼容端点可用`, checkedAt, latencyMs: 126, statusCode: 200 });
       }, 520);
       return;
     }
@@ -410,7 +472,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     try {
       const response = await fetch(`${provider.baseUrl.replace(/\/+$/, "")}/models`, { headers: { Authorization: `Bearer ${secret}` }, signal: controller.signal });
       const latencyMs = Date.now() - startedAt;
-      if (response.ok) updateDiagnostic({ state: "healthy", mode, message: "真实直连测试通过", checkedAt, latencyMs, statusCode: response.status });
+      if (response.ok) updateDiagnostic({ state: "healthy", mode, message: `${targetModel.label} 真实直连测试通过`, checkedAt, latencyMs, statusCode: response.status });
       else if (response.status === 401 || response.status === 403) applyFailure("认证失败", `认证失败（HTTP ${response.status}）`, response.status);
       else if (response.status === 429) applyFailure("请求限流", "请求受到服务端限流（HTTP 429）", response.status);
       else applyFailure("连续失败", `服务端返回 HTTP ${response.status}`, response.status);
@@ -431,16 +493,20 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       models,
       defaultModel,
       addProvider,
+      addModel,
+      removeModel,
+      updateModelRouting,
       toggleProvider,
       removeProvider,
       addKey,
+      removeKey,
       cycleKeyStatus,
       updateRule,
       runAgent,
       clearRuns,
       testProvider,
     }),
-    [addKey, addProvider, clearRuns, cycleKeyStatus, defaultModel, hydrated, keys, models, providers, removeProvider, rule, runAgent, runs, testProvider, toggleProvider, updateRule],
+    [addKey, addModel, addProvider, clearRuns, cycleKeyStatus, defaultModel, hydrated, keys, models, providers, removeKey, removeModel, removeProvider, rule, runAgent, runs, testProvider, toggleProvider, updateModelRouting, updateRule],
   );
 
   return <AgentStateContext.Provider value={value}>{children}</AgentStateContext.Provider>;

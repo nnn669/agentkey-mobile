@@ -13,8 +13,22 @@ describe("多密钥路由", () => {
     expect(selectKey(pool, "priority")?.id).toBe("primary");
   });
 
-  it("循环轮询模式优先选择当前用量较低的可用密钥", () => {
-    expect(selectKey(pool, "roundRobin")?.id).toBe("backup");
+  it("循环轮询在没有游标时从稳定顺序的第一把可用密钥开始", () => {
+    expect(selectKey(pool, "roundRobin")?.id).toBe("primary");
+  });
+
+  it("循环轮询从模型游标的下一把密钥继续，并在末尾回绕", () => {
+    expect(selectKey(pool, "roundRobin", "primary")?.id).toBe("backup");
+    expect(selectKey(pool, "roundRobin", "backup")?.id).toBe("primary");
+  });
+
+  it("循环轮询跳过冷却和停用的密钥", () => {
+    const candidates: KeyCandidate[] = [
+      { id: "first", priority: 1, usage: 0, status: "healthy" },
+      { id: "skipped", priority: 2, usage: 0, status: "disabled" },
+      { id: "third", priority: 3, usage: 0, status: "healthy" },
+    ];
+    expect(selectKey(candidates, "roundRobin", "first")?.id).toBe("third");
   });
 
   it("最少负载模式忽略冷却中的密钥", () => {

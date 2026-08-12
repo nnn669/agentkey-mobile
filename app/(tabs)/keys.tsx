@@ -1,4 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
@@ -8,7 +9,8 @@ import { getKeyStatusLabel, useAgentState, type KeyEntry, type ModelProfile } fr
 import { isCooldownActive, remainingCooldownSeconds } from "@/lib/agent-logic";
 
 export default function KeysScreen() {
-  const { keys, models, addKey, cycleKeyStatus } = useAgentState();
+  const { modelId } = useLocalSearchParams<{ modelId?: string }>();
+  const { keys, models, addKey, cycleKeyStatus, removeKey } = useAgentState();
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [label, setLabel] = useState("");
@@ -21,10 +23,12 @@ export default function KeysScreen() {
   }, []);
 
   useEffect(() => {
-    if (!selectedModelId && models[0]) setSelectedModelId(models[0].id);
-  }, [models, selectedModelId]);
+    if (modelId && models.some((item) => item.id === modelId)) setSelectedModelId(modelId);
+    else if (!selectedModelId && models[0]) setSelectedModelId(models[0].id);
+  }, [modelId, models, selectedModelId]);
 
   const selectedModel = useMemo(() => models.find((model) => model.id === selectedModelId), [models, selectedModelId]);
+  const visibleKeys = useMemo(() => selectedModelId ? keys.filter((key) => key.modelProfileId === selectedModelId) : keys, [keys, selectedModelId]);
 
   const submit = async () => {
     if (!selectedModel || !secret.trim()) {
@@ -42,17 +46,17 @@ export default function KeysScreen() {
   return (
     <ScreenContainer className="p-0" containerClassName="bg-background">
       <FlatList
-        data={keys}
+        data={visibleKeys}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => <KeyCard keyEntry={item} model={models.find((model) => model.id === item.modelProfileId)} now={now} onCycle={() => cycleKeyStatus(item.id)} />}
+        renderItem={({ item }) => <KeyCard keyEntry={item} model={models.find((model) => model.id === item.modelProfileId)} now={now} onCycle={() => cycleKeyStatus(item.id)} onRemove={() => Alert.alert("删除密钥", `确定删除“${item.label}”（••••${item.suffix}）吗？此操作会清除设备安全存储中的对应项。`, [{ text: "取消", style: "cancel" }, { text: "删除", style: "destructive", onPress: () => void removeKey(item.id) }])} />}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
           <View>
             <View style={styles.headerRow}>
               <View style={styles.headerText}>
-                <Text style={styles.title}>模型与密钥池</Text>
-                <Text style={styles.subtitle}>同一模型可配置多个密钥，并按策略自动选择可用项。</Text>
+                <Text style={styles.title}>{selectedModel ? selectedModel.label : "模型与密钥池"}</Text>
+                <Text style={styles.subtitle}>{selectedModel ? "该模型拥有独立多 Key 池；循环轮询会跳过冷却、停用和配额触达项。" : "同一模型可配置多个密钥，并按策略自动选择可用项。"}</Text>
               </View>
               <Pressable onPress={() => setModalVisible(true)} style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
                 <MaterialIcons name="add" size={21} color={COLORS.background} />
@@ -74,7 +78,7 @@ export default function KeysScreen() {
   );
 }
 
-function KeyCard({ keyEntry, model, now, onCycle }: { keyEntry: KeyEntry; model?: ModelProfile; now: number; onCycle: () => void }) {
+function KeyCard({ keyEntry, model, now, onCycle, onRemove }: { keyEntry: KeyEntry; model?: ModelProfile; now: number; onCycle: () => void; onRemove: () => void }) {
   const cooling = keyEntry.status === "cooling" && isCooldownActive(keyEntry.cooldownUntil, now);
   const visibleStatus = cooling ? "cooling" : keyEntry.status;
   const tone = visibleStatus === "healthy" ? "success" : visibleStatus === "cooling" ? "warning" : "error";
@@ -96,7 +100,7 @@ function KeyCard({ keyEntry, model, now, onCycle }: { keyEntry: KeyEntry; model?
       </View>
       <View style={styles.keyFooter}>
         <Text style={styles.footerHint}>{cooling ? `${keyEntry.cooldownReason ?? "自动冷却"} · ${remaining} 秒后自动恢复` : keyEntry.failureCount ? `连续失败 ${keyEntry.failureCount} 次 · 阈值后自动冷却` : "点击状态可依次切换：可用 → 冷却 → 停用"}</Text>
-        <Pressable onPress={onCycle} style={({ pressed }) => [styles.stateButton, pressed && styles.pressed]}><MaterialIcons name="sync" size={18} color={COLORS.mint} /></Pressable>
+        <View style={styles.keyControls}><Pressable onPress={onCycle} style={({ pressed }) => [styles.stateButton, pressed && styles.pressed]}><MaterialIcons name="sync" size={18} color={COLORS.mint} /></Pressable><Pressable onPress={onRemove} style={({ pressed }) => [styles.removeKeyButton, pressed && styles.pressed]}><MaterialIcons name="delete-outline" size={18} color={COLORS.coral} /></Pressable></View>
       </View>
     </Card>
   );
@@ -154,6 +158,8 @@ const styles = StyleSheet.create({
   keyFooter: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginTop: 11 },
   footerHint: { color: COLORS.muted, flex: 1, fontSize: 10, lineHeight: 15, paddingRight: 8 },
   stateButton: { alignItems: "center", backgroundColor: "#17363B", borderRadius: 10, height: 31, justifyContent: "center", width: 31 },
+  keyControls: { flexDirection: "row", gap: 7 },
+  removeKeyButton: { alignItems: "center", backgroundColor: "#3A242C", borderRadius: 10, height: 31, justifyContent: "center", width: 31 },
   emptyText: { color: COLORS.muted, fontSize: 13, lineHeight: 19, textAlign: "center" },
   modalOverlay: { backgroundColor: "#00000099", flex: 1, justifyContent: "flex-end" },
   sheet: { backgroundColor: COLORS.surface, borderColor: COLORS.border, borderTopLeftRadius: 28, borderTopRightRadius: 28, borderWidth: 1, padding: 20, paddingBottom: 28 },

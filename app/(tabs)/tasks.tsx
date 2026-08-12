@@ -1,13 +1,13 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useMemo, useState } from "react";
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { Badge, Card, COLORS, PrimaryButton } from "@/components/agent-ui";
 import { ScreenContainer } from "@/components/screen-container";
 import { useAgentState, type AgentRun } from "@/lib/agent-state";
 
 export default function TasksScreen() {
-  const { defaultModel, runs, runAgent, clearRuns } = useAgentState();
+  const { defaultModel, models, runs, runAgent, clearRuns, updateRule } = useAgentState();
   const [prompt, setPrompt] = useState("分析当前 API 密钥池，并给出稳定性摘要");
   const running = useMemo(() => runs.some((run) => run.status === "running"), [runs]);
 
@@ -38,6 +38,10 @@ export default function TasksScreen() {
                 </View>
                 <Badge label="本地演示" tone="info" />
               </View>
+              <Text style={styles.modelPickerLabel}>选择执行模型</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modelPicker}>
+                {models.map((model) => <Pressable key={model.id} onPress={() => updateRule({ defaultModelId: model.id })} style={({ pressed }) => [styles.modelOption, defaultModel?.id === model.id && styles.modelOptionSelected, pressed && styles.pressed]}><MaterialIcons name={defaultModel?.id === model.id ? "radio-button-checked" : "radio-button-unchecked"} size={15} color={defaultModel?.id === model.id ? COLORS.mint : COLORS.muted} /><Text style={[styles.modelOptionText, defaultModel?.id === model.id && styles.modelOptionTextSelected]}>{model.label}</Text></Pressable>)}
+              </ScrollView>
               <TextInput
                 multiline
                 value={prompt}
@@ -122,6 +126,12 @@ const styles = StyleSheet.create({
   modelInfo: { flex: 1 },
   modelCaption: { color: COLORS.muted, fontSize: 11 },
   modelTitle: { color: COLORS.text, fontSize: 14, fontWeight: "800", marginTop: 2 },
+  modelPickerLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "700", marginBottom: 7 },
+  modelPicker: { gap: 8, marginBottom: 13 },
+  modelOption: { alignItems: "center", backgroundColor: "#0A1A26", borderColor: COLORS.border, borderRadius: 10, borderWidth: 1, flexDirection: "row", gap: 5, paddingHorizontal: 10, paddingVertical: 8 },
+  modelOptionSelected: { backgroundColor: "#153B38", borderColor: COLORS.mint },
+  modelOptionText: { color: COLORS.muted, fontSize: 11, fontWeight: "700" },
+  modelOptionTextSelected: { color: COLORS.mint },
   input: { backgroundColor: "#0A1A26", borderColor: COLORS.border, borderRadius: 14, borderWidth: 1, color: COLORS.text, fontSize: 14, lineHeight: 20, minHeight: 104, padding: 13 },
   helper: { color: COLORS.muted, fontSize: 11, lineHeight: 16, marginBottom: 13, marginTop: 8 },
   historyTitleRow: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
