@@ -5,6 +5,7 @@ import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } 
 import { Badge, Card, COLORS, PrimaryButton } from "@/components/agent-ui";
 import { ScreenContainer } from "@/components/screen-container";
 import { getKeyStatusLabel, useAgentState, type KeyEntry, type ModelProfile } from "@/lib/agent-state";
+import { isCooldownActive, remainingCooldownSeconds } from "@/lib/agent-logic";
 
 export default function KeysScreen() {
   const { keys, models, addKey, cycleKeyStatus } = useAgentState();
@@ -12,6 +13,12 @@ export default function KeysScreen() {
   const [selectedModelId, setSelectedModelId] = useState("");
   const [label, setLabel] = useState("");
   const [secret, setSecret] = useState("");
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!selectedModelId && models[0]) setSelectedModelId(models[0].id);
@@ -37,7 +44,7 @@ export default function KeysScreen() {
       <FlatList
         data={keys}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => <KeyCard keyEntry={item} model={models.find((model) => model.id === item.modelProfileId)} onCycle={() => cycleKeyStatus(item.id)} />}
+        renderItem={({ item }) => <KeyCard keyEntry={item} model={models.find((model) => model.id === item.modelProfileId)} now={now} onCycle={() => cycleKeyStatus(item.id)} />}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
@@ -67,9 +74,12 @@ export default function KeysScreen() {
   );
 }
 
-function KeyCard({ keyEntry, model, onCycle }: { keyEntry: KeyEntry; model?: ModelProfile; onCycle: () => void }) {
-  const tone = keyEntry.status === "healthy" ? "success" : keyEntry.status === "cooling" ? "warning" : "error";
+function KeyCard({ keyEntry, model, now, onCycle }: { keyEntry: KeyEntry; model?: ModelProfile; now: number; onCycle: () => void }) {
+  const cooling = keyEntry.status === "cooling" && isCooldownActive(keyEntry.cooldownUntil, now);
+  const visibleStatus = cooling ? "cooling" : keyEntry.status;
+  const tone = visibleStatus === "healthy" ? "success" : visibleStatus === "cooling" ? "warning" : "error";
   const usagePercent = Math.min(100, Math.round((keyEntry.usage / keyEntry.quota) * 100));
+  const remaining = remainingCooldownSeconds(keyEntry.cooldownUntil, now);
   return (
     <Card style={styles.keyCard}>
       <View style={styles.keyTop}>
@@ -78,14 +88,14 @@ function KeyCard({ keyEntry, model, onCycle }: { keyEntry: KeyEntry; model?: Mod
           <Text style={styles.keyLabel}>{keyEntry.label}</Text>
           <Text style={styles.keyMeta}>{model?.label ?? "已移除模型"} · ••••{keyEntry.suffix}</Text>
         </View>
-        <Badge label={getKeyStatusLabel(keyEntry.status)} tone={tone} />
+        <Badge label={getKeyStatusLabel(visibleStatus)} tone={tone} />
       </View>
       <View style={styles.usageRow}>
         <View style={styles.usageTextWrap}><Text style={styles.usageText}>演示用量 {keyEntry.usage} / {keyEntry.quota}</Text><Text style={styles.priorityText}>优先级 {keyEntry.priority}</Text></View>
-        <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${usagePercent}%`, backgroundColor: keyEntry.status === "healthy" ? COLORS.mint : COLORS.amber }]} /></View>
+        <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${usagePercent}%`, backgroundColor: visibleStatus === "healthy" ? COLORS.mint : COLORS.amber }]} /></View>
       </View>
       <View style={styles.keyFooter}>
-        <Text style={styles.footerHint}>点击状态可依次切换：可用 → 冷却 → 停用</Text>
+        <Text style={styles.footerHint}>{cooling ? `${keyEntry.cooldownReason ?? "自动冷却"} · ${remaining} 秒后自动恢复` : keyEntry.failureCount ? `连续失败 ${keyEntry.failureCount} 次 · 阈值后自动冷却` : "点击状态可依次切换：可用 → 冷却 → 停用"}</Text>
         <Pressable onPress={onCycle} style={({ pressed }) => [styles.stateButton, pressed && styles.pressed]}><MaterialIcons name="sync" size={18} color={COLORS.mint} /></Pressable>
       </View>
     </Card>

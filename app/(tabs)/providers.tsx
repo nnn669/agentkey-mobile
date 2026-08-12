@@ -4,12 +4,12 @@ import { Alert, FlatList, Modal, Pressable, StyleSheet, Switch, Text, TextInput,
 
 import { Badge, Card, COLORS, PrimaryButton } from "@/components/agent-ui";
 import { ScreenContainer } from "@/components/screen-container";
-import { useAgentState, type ApiProvider } from "@/lib/agent-state";
+import { useAgentState, type ApiProvider, type ConnectionTestMode } from "@/lib/agent-state";
 
 const TRACK_COLORS = { false: "#294454", true: "#27796E" };
 
 export default function ProvidersScreen() {
-  const { providers, addProvider, removeProvider, toggleProvider } = useAgentState();
+  const { providers, addProvider, removeProvider, testProvider, toggleProvider } = useAgentState();
   const [modalVisible, setModalVisible] = useState(false);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -32,7 +32,7 @@ export default function ProvidersScreen() {
       <FlatList
         data={providers}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => <ProviderCard item={item} onToggle={() => toggleProvider(item.id)} onRemove={() => {
+        renderItem={({ item }) => <ProviderCard item={item} onTest={(mode) => void testProvider(item.id, mode)} onToggle={() => toggleProvider(item.id)} onRemove={() => {
           Alert.alert("移除 API 供应商", `确定移除“${item.name}”及其密钥池吗？`, [
             { text: "取消", style: "cancel" },
             { text: "移除", style: "destructive", onPress: () => removeProvider(item.id) },
@@ -53,7 +53,7 @@ export default function ProvidersScreen() {
             </View>
             <Card style={styles.notice}>
               <MaterialIcons name="security" size={20} color={COLORS.mint} />
-              <Text style={styles.noticeText}>此原型不会请求这些地址。真实调用前，请选择设备直连或自有安全代理层。</Text>
+              <Text style={styles.noticeText}>可先运行模拟诊断。真实直连测试会只发送一次轻量请求，密钥始终保持脱敏且不写入诊断记录。</Text>
             </Card>
           </View>
         }
@@ -74,7 +74,9 @@ export default function ProvidersScreen() {
   );
 }
 
-function ProviderCard({ item, onToggle, onRemove }: { item: ApiProvider; onToggle: () => void; onRemove: () => void }) {
+function ProviderCard({ item, onTest, onToggle, onRemove }: { item: ApiProvider; onTest: (mode: ConnectionTestMode) => void; onToggle: () => void; onRemove: () => void }) {
+  const diagnostic = item.diagnostic;
+  const tone = diagnostic?.state === "healthy" ? "success" : diagnostic?.state === "error" ? "error" : diagnostic?.state === "testing" ? "warning" : "neutral";
   return (
     <Card style={styles.providerCard}>
       <View style={styles.cardTop}>
@@ -89,6 +91,11 @@ function ProviderCard({ item, onToggle, onRemove }: { item: ApiProvider; onToggl
         <Badge label={item.protocol} tone="info" />
         <Text style={styles.modelCount}>{item.models.length} 个模型</Text>
         <Pressable onPress={onRemove} style={({ pressed }) => [styles.removeButton, pressed && styles.pressed]}><MaterialIcons name="delete-outline" size={19} color={COLORS.coral} /></Pressable>
+      </View>
+      {diagnostic ? <View style={styles.diagnosticRow}><MaterialIcons name={diagnostic.state === "healthy" ? "check-circle" : diagnostic.state === "error" ? "error-outline" : "sync"} size={17} color={diagnostic.state === "healthy" ? COLORS.mint : diagnostic.state === "error" ? COLORS.coral : COLORS.amber} /><View style={styles.diagnosticText}><Text style={styles.diagnosticTitle}>{diagnostic.message}</Text><Text style={styles.diagnosticMeta}>{diagnostic.mode === "direct" ? "真实直连" : "模拟诊断"}{diagnostic.statusCode ? ` · HTTP ${diagnostic.statusCode}` : ""}{diagnostic.latencyMs ? ` · ${diagnostic.latencyMs}ms` : ""}</Text></View><Badge label={diagnostic.state === "testing" ? "测试中" : diagnostic.state === "healthy" ? "可连接" : "需处理"} tone={tone} /></View> : null}
+      <View style={styles.testRow}>
+        <Pressable disabled={diagnostic?.state === "testing"} onPress={() => onTest("simulated")} style={({ pressed }) => [styles.testButton, pressed && styles.pressed, diagnostic?.state === "testing" && styles.testDisabled]}><MaterialIcons name="science" size={17} color={COLORS.mint} /><Text style={styles.testButtonText}>模拟诊断</Text></Pressable>
+        <Pressable disabled={diagnostic?.state === "testing"} onPress={() => onTest("direct")} style={({ pressed }) => [styles.testButton, styles.testDirect, pressed && styles.pressed, diagnostic?.state === "testing" && styles.testDisabled]}><MaterialIcons name="wifi-tethering" size={17} color={COLORS.blue} /><Text style={[styles.testButtonText, styles.testDirectText]}>真实直连</Text></Pressable>
       </View>
     </Card>
   );
@@ -136,6 +143,16 @@ const styles = StyleSheet.create({
   cardFooter: { alignItems: "center", borderTopColor: COLORS.border, borderTopWidth: 1, flexDirection: "row", gap: 9, marginTop: 14, paddingTop: 12 },
   modelCount: { color: COLORS.muted, flex: 1, fontSize: 12 },
   removeButton: { alignItems: "center", height: 30, justifyContent: "center", width: 30 },
+  diagnosticRow: { alignItems: "center", borderTopColor: COLORS.border, borderTopWidth: 1, flexDirection: "row", gap: 8, marginTop: 12, paddingTop: 12 },
+  diagnosticText: { flex: 1 },
+  diagnosticTitle: { color: COLORS.text, fontSize: 11, fontWeight: "700" },
+  diagnosticMeta: { color: COLORS.muted, fontSize: 10, marginTop: 2 },
+  testRow: { flexDirection: "row", gap: 9, marginTop: 13 },
+  testButton: { alignItems: "center", backgroundColor: "#153B38", borderColor: "#28756E", borderRadius: 10, borderWidth: 1, flex: 1, flexDirection: "row", gap: 6, justifyContent: "center", minHeight: 38 },
+  testDirect: { backgroundColor: "#173658", borderColor: "#315C91" },
+  testButtonText: { color: COLORS.mint, fontSize: 11, fontWeight: "800" },
+  testDirectText: { color: COLORS.blue },
+  testDisabled: { opacity: 0.48 },
   emptyText: { color: COLORS.muted, fontSize: 13, lineHeight: 19, textAlign: "center" },
   modalOverlay: { backgroundColor: "#00000099", flex: 1, justifyContent: "flex-end" },
   sheet: { backgroundColor: COLORS.surface, borderColor: COLORS.border, borderTopLeftRadius: 28, borderTopRightRadius: 28, borderWidth: 1, padding: 20, paddingBottom: 28 },

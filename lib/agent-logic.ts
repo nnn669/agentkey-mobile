@@ -6,10 +6,30 @@ export type KeyCandidate = {
   priority: number;
   usage: number;
   status: KeyStatus;
+  cooldownUntil?: string;
 };
 
+export type CooldownReason = "manual" | "认证失败" | "请求限流" | "连续失败" | "配额触达";
+
+export function isCooldownActive(cooldownUntil?: string, now = Date.now()) {
+  return Boolean(cooldownUntil && Date.parse(cooldownUntil) > now);
+}
+
+export function remainingCooldownSeconds(cooldownUntil?: string, now = Date.now()) {
+  if (!cooldownUntil) return 0;
+  return Math.max(0, Math.ceil((Date.parse(cooldownUntil) - now) / 1000));
+}
+
+export function cooldownUntilAfter(seconds: number, now = Date.now()) {
+  return new Date(now + seconds * 1000).toISOString();
+}
+
+export function shouldAutoCooldown({ failureCount, failureThreshold, usage, quota }: { failureCount: number; failureThreshold: number; usage: number; quota: number }) {
+  return failureCount >= failureThreshold || usage >= quota;
+}
+
 export function selectKey<T extends KeyCandidate>(keys: T[], strategy: RoutingStrategy): T | undefined {
-  const available = keys.filter((key) => key.status === "healthy");
+  const available = keys.filter((key) => key.status === "healthy" && !isCooldownActive(key.cooldownUntil));
 
   if (!available.length) return undefined;
 
