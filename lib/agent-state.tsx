@@ -3,7 +3,7 @@ import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 
-import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy } from "@/lib/agent-logic";
+import { cooldownUntilAfter, createTokenUsage, getStrategyLabel, isCooldownActive, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy, type TokenUsage } from "@/lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport, type ToolAuthGrant, type ToolAuthScope } from "@/lib/mcp-logic";
 
 export type { ToolAuthGrant, ToolAuthScope } from "@/lib/mcp-logic";
@@ -81,6 +81,7 @@ export type AgentRun = {
   usedFallback: boolean;
   createdAt: string;
   steps: RunStep[];
+  tokenUsage?: TokenUsage;
 };
 
 export type McpDiagnostic = {
@@ -665,6 +666,22 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       models: provider.models.map((item) => item.id === model.id ? { ...item, lastRoutedKeyId: usedKey.id } : item),
     })));
     const runId = `run-${Date.now()}`;
+    const steps: RunStep[] = [
+      { id: "plan", title: "解析任务", detail: "已生成本地执行计划", state: "complete" },
+      ...(matchedMemories.length ? [{ id: "memory", title: "检索本地记忆", detail: `已引用：${matchedMemories.map((memory) => memory.title).join("、")}`, state: "complete" as const }] : []),
+      ...(enabledToolCount ? [{ id: "mcp", title: "准备 MCP 工具", detail: `${enabledToolCount} 个已启用工具可供本次任务调用`, state: "complete" as const }] : []),
+      {
+        id: "route",
+        title: "选择模型与密钥",
+        detail: `${model.label} · ${getStrategyLabel(strategy)} · ••••${usedKey.suffix}`,
+        state: alternate ? "warning" : "complete",
+      },
+      { id: "execute", title: "执行代理步骤", detail: "正在模拟兼容 API 调用", state: "running" },
+    ];
+    const tokenUsage = createTokenUsage(
+      [prompt.trim(), ...matchedMemories.map((memory) => `${memory.title}\n${memory.content}`), enabledToolCount ? `${enabledToolCount} 个 MCP 工具可用` : ""].filter(Boolean).join("\n"),
+      steps.map((step) => `${step.title}\n${step.detail}`).join("\n"),
+    );
     const run: AgentRun = {
       id: runId,
       prompt: prompt.trim(),
@@ -673,18 +690,8 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       keySuffix: usedKey.suffix,
       usedFallback: Boolean(alternate),
       createdAt: new Date().toISOString(),
-      steps: [
-        { id: "plan", title: "解析任务", detail: "已生成本地执行计划", state: "complete" },
-        ...(matchedMemories.length ? [{ id: "memory", title: "检索本地记忆", detail: `已引用：${matchedMemories.map((memory) => memory.title).join("、")}`, state: "complete" as const }] : []),
-        ...(enabledToolCount ? [{ id: "mcp", title: "准备 MCP 工具", detail: `${enabledToolCount} 个已启用工具可供本次任务调用`, state: "complete" as const }] : []),
-        {
-          id: "route",
-          title: "选择模型与密钥",
-          detail: `${model.label} · ${getStrategyLabel(strategy)} · ••••${usedKey.suffix}`,
-          state: alternate ? "warning" : "complete",
-        },
-        { id: "execute", title: "执行代理步骤", detail: "正在模拟兼容 API 调用", state: "running" },
-      ],
+      steps,
+      tokenUsage,
     };
 
     setRuns((current) => [run, ...current].slice(0, 12));

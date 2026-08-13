@@ -11,6 +11,36 @@ export type KeyCandidate = {
 
 export type CooldownReason = "manual" | "认证失败" | "请求限流" | "连续失败" | "配额触达";
 
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+export function estimateTextTokens(text: string) {
+  const value = text.trim();
+  if (!value) return 0;
+  const hanCharacters = (value.match(/[\p{Script=Han}]/gu) ?? []).length;
+  const wordCharacters = value.replace(/[\p{Script=Han}]/gu, "").match(/[\p{L}\p{N}_-]+/gu) ?? [];
+  const wordTokens = wordCharacters.reduce((total, word) => total + Math.ceil(word.length / 4), 0);
+  const punctuationTokens = Math.ceil(value.replace(/[\p{Script=Han}\p{L}\p{N}_\s-]/gu, "").length / 3);
+  return hanCharacters + wordTokens + punctuationTokens;
+}
+
+export function createTokenUsage(inputText: string, outputText: string): TokenUsage {
+  const inputTokens = estimateTextTokens(inputText);
+  const outputTokens = estimateTextTokens(outputText);
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+export function sumTokenUsage(usages: TokenUsage[]): TokenUsage {
+  return usages.reduce((total, usage) => ({
+    inputTokens: total.inputTokens + usage.inputTokens,
+    outputTokens: total.outputTokens + usage.outputTokens,
+    totalTokens: total.totalTokens + usage.totalTokens,
+  }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+}
+
 export function isCooldownActive(cooldownUntil?: string, now = Date.now()) {
   return Boolean(cooldownUntil && Date.parse(cooldownUntil) > now);
 }

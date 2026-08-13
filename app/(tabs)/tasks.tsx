@@ -1,15 +1,20 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { Badge, Card, COLORS, PrimaryButton } from "@/components/agent-ui";
 import { ScreenContainer } from "@/components/screen-container";
+import { createTokenUsage, type TokenUsage } from "@/lib/agent-logic";
 import { useAgentState, type AgentRun } from "@/lib/agent-state";
 
 export default function TasksScreen() {
+  const router = useRouter();
   const { defaultModel, models, runs, runAgent, clearRuns, updateRule } = useAgentState();
   const [prompt, setPrompt] = useState("分析当前 API 密钥池，并给出稳定性摘要");
+  const [statsVisible, setStatsVisible] = useState(false);
   const running = useMemo(() => runs.some((run) => run.status === "running"), [runs]);
+  const currentUsage = useMemo(() => runs[0] ? getRunTokenUsage(runs[0]) : undefined, [runs]);
 
   const submit = () => {
     if (!prompt.trim()) return;
@@ -26,8 +31,10 @@ export default function TasksScreen() {
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
           <View>
-            <Text style={styles.title}>代理任务</Text>
-            <Text style={styles.subtitle}>在本地演示模式中规划、路由并记录执行步骤。</Text>
+            <View style={styles.titleRow}>
+              <View style={styles.titleText}><Text style={styles.title}>代理任务</Text><Text style={styles.subtitle}>在本地演示模式中规划、路由并记录执行步骤。</Text></View>
+              <Pressable accessibilityLabel="查看当前对话 Token 统计" onPress={() => setStatsVisible(true)} style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}><MaterialIcons name="settings" size={20} color={COLORS.mint} /></Pressable>
+            </View>
 
             <Card style={styles.composerCard}>
               <View style={styles.modelRow}>
@@ -76,8 +83,21 @@ export default function TasksScreen() {
           </Card>
         }
       />
+      <TokenStatsModal usage={currentUsage} run={runs[0]} onClose={() => setStatsVisible(false)} onOpenSettings={() => { setStatsVisible(false); router.push("/settings" as never); }} visible={statsVisible} />
     </ScreenContainer>
   );
+}
+
+function getRunTokenUsage(run: AgentRun): TokenUsage {
+  return run.tokenUsage ?? createTokenUsage(run.prompt, run.steps.map((step) => `${step.title}\n${step.detail}`).join("\n"));
+}
+
+function TokenStatsModal({ visible, usage, run, onClose, onOpenSettings }: { visible: boolean; usage?: TokenUsage; run?: AgentRun; onClose: () => void; onOpenSettings: () => void }) {
+  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>当前对话 Token 统计</Text><Text style={styles.sheetSub}>统计最近一次代理任务的本地输入与输出估算。</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View>{usage && run ? <><Card style={styles.totalCard}><Text style={styles.totalValue}>{usage.totalTokens.toLocaleString()}</Text><Text style={styles.totalLabel}>总 Token 估算</Text><Text numberOfLines={2} style={styles.runName}>{run.prompt}</Text></Card><View style={styles.tokenRow}><TokenMetric label="输入" value={usage.inputTokens} color={COLORS.blue} /><TokenMetric label="输出" value={usage.outputTokens} color={COLORS.mint} /></View></> : <Card style={styles.emptyStats}><MaterialIcons name="forum" size={24} color={COLORS.muted} /><Text style={styles.emptyText}>尚无任务对话。运行代理后会在这里显示当前对话的 Token 统计。</Text></Card>}<Text style={styles.statsNote}>这是依据本地文本内容计算的估算值，不等同于服务商账单 Token。</Text><PrimaryButton label="查看全部 Token 统计" icon="bar-chart" onPress={onOpenSettings} /></View></View></Modal>;
+}
+
+function TokenMetric({ label, value, color }: { label: string; value: number; color: string }) {
+  return <View style={styles.tokenMetric}><View style={[styles.tokenDot, { backgroundColor: color }]} /><Text style={styles.tokenMetricLabel}>{label}</Text><Text style={styles.tokenMetricValue}>{value.toLocaleString()}</Text></View>;
 }
 
 function RunCard({ run }: { run: AgentRun }) {
@@ -118,8 +138,11 @@ function RunCard({ run }: { run: AgentRun }) {
 
 const styles = StyleSheet.create({
   listContent: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 32 },
+  titleRow: { alignItems: "flex-start", flexDirection: "row", justifyContent: "space-between" },
+  titleText: { flex: 1, paddingRight: 12 },
   title: { color: COLORS.text, fontSize: 28, fontWeight: "800", letterSpacing: -0.7 },
   subtitle: { color: COLORS.muted, fontSize: 13, lineHeight: 19, marginTop: 5, maxWidth: 310 },
+  settingsButton: { alignItems: "center", backgroundColor: "#163D3C", borderColor: "#28756E", borderRadius: 13, borderWidth: 1, height: 42, justifyContent: "center", width: 42 },
   composerCard: { marginBottom: 25, marginTop: 18 },
   modelRow: { alignItems: "center", flexDirection: "row", marginBottom: 14 },
   modelMark: { alignItems: "center", backgroundColor: "#163D3C", borderRadius: 12, height: 38, justifyContent: "center", marginRight: 10, width: 38 },
@@ -153,5 +176,23 @@ const styles = StyleSheet.create({
   stepText: { flex: 1 },
   stepTitle: { color: COLORS.text, fontSize: 12, fontWeight: "700" },
   stepDetail: { color: COLORS.muted, fontSize: 11, marginTop: 2 },
+  overlay: { backgroundColor: "#00000099", flex: 1, justifyContent: "flex-end" },
+  sheet: { backgroundColor: COLORS.surface, borderColor: COLORS.border, borderTopLeftRadius: 28, borderTopRightRadius: 28, borderWidth: 1, padding: 20, paddingBottom: 28 },
+  handle: { alignSelf: "center", backgroundColor: "#557184", borderRadius: 99, height: 4, marginBottom: 17, width: 42 },
+  sheetHeader: { alignItems: "flex-start", flexDirection: "row", justifyContent: "space-between", marginBottom: 17 },
+  sheetTitle: { color: COLORS.text, fontSize: 19, fontWeight: "800" },
+  sheetSub: { color: COLORS.muted, fontSize: 12, lineHeight: 17, marginTop: 4, maxWidth: 275 },
+  closeButton: { alignItems: "center", backgroundColor: "#1A3344", borderRadius: 99, height: 34, justifyContent: "center", width: 34 },
+  totalCard: { alignItems: "center", backgroundColor: "#102C36", borderColor: "#28756E", marginBottom: 12, paddingVertical: 18 },
+  totalValue: { color: COLORS.mint, fontSize: 31, fontWeight: "800", letterSpacing: -1 },
+  totalLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "700", marginTop: 3 },
+  runName: { color: COLORS.text, fontSize: 12, fontWeight: "700", marginTop: 11, textAlign: "center" },
+  tokenRow: { flexDirection: "row", gap: 10, marginBottom: 13 },
+  tokenMetric: { alignItems: "center", backgroundColor: "#0A1A26", borderColor: COLORS.border, borderRadius: 13, borderWidth: 1, flex: 1, flexDirection: "row", gap: 6, padding: 12 },
+  tokenDot: { borderRadius: 99, height: 7, width: 7 },
+  tokenMetricLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "700" },
+  tokenMetricValue: { color: COLORS.text, flex: 1, fontSize: 15, fontWeight: "800", textAlign: "right" },
+  statsNote: { color: COLORS.muted, fontSize: 11, lineHeight: 16, marginBottom: 14, marginTop: 1 },
+  emptyStats: { alignItems: "center", flexDirection: "row", gap: 10, marginBottom: 13 },
   pressed: { opacity: 0.75, transform: [{ scale: 0.98 }] },
 });

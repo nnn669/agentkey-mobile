@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, remainingCooldownSeconds, selectKey, shouldAutoCooldown, type KeyCandidate } from "../lib/agent-logic";
+import { cooldownUntilAfter, createTokenUsage, estimateTextTokens, getStrategyLabel, isCooldownActive, remainingCooldownSeconds, selectKey, shouldAutoCooldown, sumTokenUsage, type KeyCandidate } from "../lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
 
 const pool: KeyCandidate[] = [
@@ -69,6 +69,21 @@ describe("密钥自动冷却", () => {
     expect(shouldAutoCooldown({ failureCount: 2, failureThreshold: 2, usage: 10, quota: 100 })).toBe(true);
     expect(shouldAutoCooldown({ failureCount: 0, failureThreshold: 2, usage: 100, quota: 100 })).toBe(true);
     expect(shouldAutoCooldown({ failureCount: 1, failureThreshold: 2, usage: 99, quota: 100 })).toBe(false);
+  });
+});
+
+describe("Token 统计", () => {
+  it("以确定性规则估算中英文输入文本的 Token 数", () => {
+    expect(estimateTextTokens("你好")).toBe(2);
+    expect(estimateTextTokens("hello")).toBe(2);
+    expect(estimateTextTokens("   ")).toBe(0);
+  });
+
+  it("区分输入、输出并汇总多个任务的 Token 使用量", () => {
+    const first = createTokenUsage("你好", "hello");
+    const second = createTokenUsage("分析", "完成");
+    expect(first).toEqual({ inputTokens: 2, outputTokens: 2, totalTokens: 4 });
+    expect(sumTokenUsage([first, second])).toEqual({ inputTokens: 4, outputTokens: 4, totalTokens: 8 });
   });
 });
 
