@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, remainingCooldownSeconds, selectKey, shouldAutoCooldown, type KeyCandidate } from "../lib/agent-logic";
-import { createMemoryBackup, createRpcRequest, extractMcpTools, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
+import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
 
 const pool: KeyCandidate[] = [
   { id: "primary", priority: 1, usage: 18, status: "healthy" },
@@ -101,6 +101,20 @@ describe("MCP 工具与本地记忆", () => {
   it("在授权前生成工具参数摘要，并脱敏敏感字段", () => {
     expect(summarizeToolArguments('{"query":"季度报告","apiKey":"sk-should-hide","limit":5}')).toBe("query: “季度报告” · apiKey: [已脱敏] · limit: 5");
     expect(summarizeToolArguments("{}")).toBe("无参数");
+  });
+
+  it("识别具备写入、删除或发布能力的高风险工具", () => {
+    expect(isHighRiskTool({ name: "delete_record", description: "永久删除一条记录" })).toBe(true);
+    expect(isHighRiskTool({ name: "deploy_service", description: "发布到生产环境" })).toBe(true);
+    expect(isHighRiskTool({ name: "search_docs", description: "检索只读文档" })).toBe(false);
+  });
+
+  it("仅接受未到期或永久的记住授权，并拒绝一次性及过期记录", () => {
+    const now = Date.parse("2026-08-13T00:00:00.000Z");
+    expect(isAuthGrantValid({ toolId: "server:write", grantedAt: "2026-08-12T23:30:00.000Z", expiresAt: "2026-08-13T01:00:00.000Z", scope: "1h" }, now)).toBe(true);
+    expect(isAuthGrantValid({ toolId: "server:write", grantedAt: "2026-08-12T22:00:00.000Z", expiresAt: "2026-08-12T23:00:00.000Z", scope: "1h" }, now)).toBe(false);
+    expect(isAuthGrantValid({ toolId: "server:write", grantedAt: "2026-08-12T00:00:00.000Z", scope: "permanent" }, now)).toBe(true);
+    expect(isAuthGrantValid({ toolId: "server:write", grantedAt: "2026-08-13T00:00:00.000Z", scope: "once" }, now)).toBe(false);
   });
 
   it("导出脱敏记忆备份且不携带运行时标识", () => {

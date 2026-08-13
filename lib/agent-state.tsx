@@ -4,7 +4,9 @@ import { Platform } from "react-native";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 
 import { cooldownUntilAfter, getStrategyLabel, isCooldownActive, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy } from "@/lib/agent-logic";
-import { createMemoryBackup, createRpcRequest, extractMcpTools, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport } from "@/lib/mcp-logic";
+import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport, type ToolAuthGrant, type ToolAuthScope } from "@/lib/mcp-logic";
+
+export type { ToolAuthGrant, ToolAuthScope } from "@/lib/mcp-logic";
 
 const STORAGE_KEY = "agentkey.public-config.v1";
 const SECRET_PREFIX = "agentkey.secret.";
@@ -138,6 +140,7 @@ type PersistedState = {
   mcpTools: McpTool[];
   memories: MemoryEntry[];
   mcpCalls: McpCall[];
+  toolAuthGrants: ToolAuthGrant[];
 };
 
 const seedProviders: ApiProvider[] = [
@@ -239,11 +242,15 @@ type AgentStateValue = {
   mcpTools: McpTool[];
   memories: MemoryEntry[];
   mcpCalls: McpCall[];
+  toolAuthGrants: ToolAuthGrant[];
   addMcpServer: (input: { name: string; transport: McpTransport; endpoint: string; messageEndpoint?: string; authToken?: string }) => Promise<boolean>;
   removeMcpServer: (serverId: string) => Promise<void>;
   testMcpServer: (serverId: string) => Promise<void>;
   toggleMcpTool: (toolId: string) => void;
-  callMcpTool: (toolId: string, rawArguments: string) => Promise<void>;
+  checkToolAuth: (toolId: string) => ToolAuthGrant | null;
+  grantToolAuth: (toolId: string, scope: ToolAuthScope) => void;
+  revokeToolAuth: (toolId: string) => void;
+  callMcpTool: (toolId: string, rawArguments: string, options?: { authorizationConfirmed?: boolean }) => Promise<"called" | "authorization_required" | "unavailable">;
   addMemory: (input: { title: string; content: string; category: string }) => void;
   updateMemory: (memoryId: string, patch: Partial<Pick<MemoryEntry, "title" | "content" | "category" | "enabled">>) => void;
   removeMemory: (memoryId: string) => void;
@@ -290,6 +297,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
   const [mcpTools, setMcpTools] = useState<McpTool[]>([]);
   const [memories, setMemories] = useState<MemoryEntry[]>(seedMemories);
   const [mcpCalls, setMcpCalls] = useState<McpCall[]>([]);
+  const [toolAuthGrants, setToolAuthGrants] = useState<ToolAuthGrant[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -307,6 +315,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
         if (parsed.mcpTools) setMcpTools(parsed.mcpTools);
         if (parsed.memories) setMemories(parsed.memories);
         if (parsed.mcpCalls) setMcpCalls(parsed.mcpCalls);
+        if (parsed.toolAuthGrants) setToolAuthGrants(parsed.toolAuthGrants.filter((grant): grant is ToolAuthGrant => Boolean(grant && typeof grant.toolId === "string" && typeof grant.grantedAt === "string" && typeof grant.scope === "string" && isAuthGrantValid(grant as ToolAuthGrant))));
       } finally {
         setHydrated(true);
       }
@@ -318,9 +327,9 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!hydrated) return;
 
-    const payload: PersistedState = { providers, keys, rule, runs, mcpServers, mcpTools, memories, mcpCalls };
+    const payload: PersistedState = { providers, keys, rule, runs, mcpServers, mcpTools, memories, mcpCalls, toolAuthGrants };
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [hydrated, keys, mcpCalls, mcpServers, mcpTools, memories, providers, rule, runs]);
+  }, [hydrated, keys, mcpCalls, mcpServers, mcpTools, memories, providers, rule, runs, toolAuthGrants]);
 
   useEffect(() => {
     const restoreExpiredKeys = () => {
@@ -331,6 +340,15 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     };
     restoreExpiredKeys();
     const timer = setInterval(restoreExpiredKeys, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const removeExpiredToolAuth = () => {
+      setToolAuthGrants((current) => current.filter((grant) => isAuthGrantValid(grant)));
+    };
+    removeExpiredToolAuth();
+    const timer = setInterval(removeExpiredToolAuth, 60_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -482,6 +500,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     setMcpServers((current) => current.filter((server) => server.id !== serverId));
     setMcpTools((current) => current.filter((tool) => tool.serverId !== serverId));
     setMcpCalls((current) => current.filter((call) => call.serverId !== serverId));
+    setToolAuthGrants((current) => current.filter((grant) => !grant.toolId.startsWith(`${serverId}:`)));
   }, []);
 
   const requestMcp = useCallback(async (server: McpServer, method: string, params?: Record<string, unknown>) => {
@@ -545,10 +564,34 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
     setMcpTools((current) => current.map((tool) => tool.id === toolId ? { ...tool, enabled: !tool.enabled } : tool));
   }, []);
 
-  const callMcpTool = useCallback(async (toolId: string, rawArguments: string) => {
+  const checkToolAuth = useCallback((toolId: string) => {
+    const grant = toolAuthGrants.find((item) => item.toolId === toolId);
+    if (!grant) return null;
+    if (isAuthGrantValid(grant)) return grant;
+    setToolAuthGrants((current) => current.filter((item) => item.toolId !== toolId));
+    return null;
+  }, [toolAuthGrants]);
+
+  const grantToolAuth = useCallback((toolId: string, scope: ToolAuthScope) => {
+    if (scope === "once") {
+      setToolAuthGrants((current) => current.filter((grant) => grant.toolId !== toolId));
+      return;
+    }
+    const grantedAt = new Date().toISOString();
+    const expiresAt = scope === "1h" ? new Date(Date.now() + 60 * 60 * 1000).toISOString() : scope === "24h" ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() : undefined;
+    const grant: ToolAuthGrant = { toolId, grantedAt, expiresAt, scope };
+    setToolAuthGrants((current) => [...current.filter((item) => item.toolId !== toolId), grant]);
+  }, []);
+
+  const revokeToolAuth = useCallback((toolId: string) => {
+    setToolAuthGrants((current) => current.filter((grant) => grant.toolId !== toolId));
+  }, []);
+
+  const callMcpTool = useCallback(async (toolId: string, rawArguments: string, options?: { authorizationConfirmed?: boolean }) => {
     const tool = mcpTools.find((item) => item.id === toolId);
     const server = tool ? mcpServers.find((item) => item.id === tool.serverId) : undefined;
-    if (!tool || !server) return;
+    if (!tool || !server) return "unavailable" as const;
+    if (isHighRiskTool(tool) && !options?.authorizationConfirmed && !checkToolAuth(toolId)) return "authorization_required" as const;
     const callId = `mcp-call-${Date.now()}`;
     const createdAt = new Date().toISOString();
     const updateTool = (patch: Partial<McpTool>) => setMcpTools((current) => current.map((item) => item.id === toolId ? { ...item, ...patch } : item));
@@ -566,7 +609,8 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       updateTool({ lastStatus: "error", lastSummary: summary });
       setMcpCalls((current) => current.map((call) => call.id === callId ? { ...call, status: "error", summary } : call));
     }
-  }, [mcpServers, mcpTools, requestMcp]);
+    return "called" as const;
+  }, [checkToolAuth, mcpServers, mcpTools, requestMcp]);
 
   const addMemory = useCallback((input: { title: string; content: string; category: string }) => {
     const title = input.title.trim();
@@ -747,10 +791,14 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       mcpTools,
       memories,
       mcpCalls,
+      toolAuthGrants,
       addMcpServer,
       removeMcpServer,
       testMcpServer,
       toggleMcpTool,
+      checkToolAuth,
+      grantToolAuth,
+      revokeToolAuth,
       callMcpTool,
       addMemory,
       updateMemory,
@@ -758,7 +806,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       exportMemories,
       importMemories,
     }),
-    [addKey, addMcpServer, addMemory, addModel, addProvider, callMcpTool, clearRuns, cycleKeyStatus, defaultModel, exportMemories, hydrated, importMemories, keys, mcpCalls, mcpServers, mcpTools, memories, models, providers, removeKey, removeMcpServer, removeMemory, removeModel, removeProvider, rule, runAgent, runs, testMcpServer, testProvider, toggleMcpTool, toggleProvider, updateMemory, updateModelRouting, updateRule],
+    [addKey, addMcpServer, addMemory, addModel, addProvider, callMcpTool, checkToolAuth, clearRuns, cycleKeyStatus, defaultModel, exportMemories, grantToolAuth, hydrated, importMemories, keys, mcpCalls, mcpServers, mcpTools, memories, models, providers, removeKey, removeMcpServer, removeMemory, removeModel, removeProvider, revokeToolAuth, rule, runAgent, runs, testMcpServer, testProvider, toggleMcpTool, toggleProvider, toolAuthGrants, updateMemory, updateModelRouting, updateRule],
   );
 
   return <AgentStateContext.Provider value={value}>{children}</AgentStateContext.Provider>;

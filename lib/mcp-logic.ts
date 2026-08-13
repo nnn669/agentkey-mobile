@@ -6,6 +6,28 @@ export type McpToolDescriptor = {
   inputSchema?: Record<string, unknown>;
 };
 
+export type ToolAuthScope = "once" | "1h" | "24h" | "permanent";
+
+export type ToolAuthGrant = {
+  toolId: string;
+  grantedAt: string;
+  expiresAt?: string;
+  scope: ToolAuthScope;
+};
+
+const HIGH_RISK_TOOL = /delete|remove|write|execute|deploy|drop|truncate|modify|update|create|send|post/i;
+
+export function isHighRiskTool(tool: Pick<McpToolDescriptor, "name" | "description">) {
+  return HIGH_RISK_TOOL.test(`${tool.name} ${tool.description ?? ""}`);
+}
+
+export function isAuthGrantValid(grant: ToolAuthGrant, now = Date.now()) {
+  if (grant.scope === "permanent") return true;
+  if (grant.scope === "once" || !grant.expiresAt) return false;
+  const expiresAt = Date.parse(grant.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
 export type McpRpcEnvelope = {
   jsonrpc?: string;
   id?: number | string | null;
