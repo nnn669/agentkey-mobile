@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cooldownUntilAfter, createTokenUsage, estimateTextTokens, getStrategyLabel, isCooldownActive, remainingCooldownSeconds, selectKey, shouldAutoCooldown, sumTokenUsage, type KeyCandidate } from "../lib/agent-logic";
+import { cooldownUntilAfter, createTokenUsage, estimateTextTokens, getStrategyLabel, isCooldownActive, parseApiTokenUsage, remainingCooldownSeconds, selectKey, shouldAutoCooldown, sumTokenUsage, type KeyCandidate } from "../lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
 
 const pool: KeyCandidate[] = [
@@ -84,6 +84,17 @@ describe("Token 统计", () => {
     const second = createTokenUsage("分析", "完成");
     expect(first).toEqual({ inputTokens: 2, outputTokens: 2, totalTokens: 4 });
     expect(sumTokenUsage([first, second])).toEqual({ inputTokens: 4, outputTokens: 4, totalTokens: 8 });
+  });
+
+  it("解析 OpenAI 兼容响应及常见命名的真实 usage 字段", () => {
+    expect(parseApiTokenUsage({ usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } })).toEqual({ inputTokens: 12, outputTokens: 8, totalTokens: 20 });
+    expect(parseApiTokenUsage({ data: { usage: { inputTokens: 7, outputTokens: 3 } } })).toEqual({ inputTokens: 7, outputTokens: 3, totalTokens: 10 });
+  });
+
+  it("拒绝缺失、负数或不完整的非兼容 usage 记录", () => {
+    expect(parseApiTokenUsage({ choices: [] })).toBeUndefined();
+    expect(parseApiTokenUsage({ usage: { total_tokens: -1 } })).toBeUndefined();
+    expect(parseApiTokenUsage({ usage: { unknown: 10 } })).toBeUndefined();
   });
 });
 

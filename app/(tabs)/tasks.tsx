@@ -15,6 +15,7 @@ export default function TasksScreen() {
   const [statsVisible, setStatsVisible] = useState(false);
   const running = useMemo(() => runs.some((run) => run.status === "running"), [runs]);
   const currentUsage = useMemo(() => runs[0] ? getRunTokenUsage(runs[0]) : undefined, [runs]);
+  const currentActualUsage = runs[0]?.actualTokenUsage;
 
   const submit = () => {
     if (!prompt.trim()) return;
@@ -83,7 +84,7 @@ export default function TasksScreen() {
           </Card>
         }
       />
-      <TokenStatsModal usage={currentUsage} run={runs[0]} onClose={() => setStatsVisible(false)} onOpenSettings={() => { setStatsVisible(false); router.push("/settings" as never); }} visible={statsVisible} />
+      <TokenStatsModal actualUsage={currentActualUsage} usage={currentUsage} run={runs[0]} onClose={() => setStatsVisible(false)} onOpenSettings={() => { setStatsVisible(false); router.push("/settings" as never); }} visible={statsVisible} />
     </ScreenContainer>
   );
 }
@@ -92,8 +93,12 @@ function getRunTokenUsage(run: AgentRun): TokenUsage {
   return run.tokenUsage ?? createTokenUsage(run.prompt, run.steps.map((step) => `${step.title}\n${step.detail}`).join("\n"));
 }
 
-function TokenStatsModal({ visible, usage, run, onClose, onOpenSettings }: { visible: boolean; usage?: TokenUsage; run?: AgentRun; onClose: () => void; onOpenSettings: () => void }) {
-  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>当前对话 Token 统计</Text><Text style={styles.sheetSub}>统计最近一次代理任务的本地输入与输出估算。</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View>{usage && run ? <><Card style={styles.totalCard}><Text style={styles.totalValue}>{usage.totalTokens.toLocaleString()}</Text><Text style={styles.totalLabel}>总 Token 估算</Text><Text numberOfLines={2} style={styles.runName}>{run.prompt}</Text></Card><View style={styles.tokenRow}><TokenMetric label="输入" value={usage.inputTokens} color={COLORS.blue} /><TokenMetric label="输出" value={usage.outputTokens} color={COLORS.mint} /></View></> : <Card style={styles.emptyStats}><MaterialIcons name="forum" size={24} color={COLORS.muted} /><Text style={styles.emptyText}>尚无任务对话。运行代理后会在这里显示当前对话的 Token 统计。</Text></Card>}<Text style={styles.statsNote}>这是依据本地文本内容计算的估算值，不等同于服务商账单 Token。</Text><PrimaryButton label="查看全部 Token 统计" icon="bar-chart" onPress={onOpenSettings} /></View></View></Modal>;
+function TokenStatsModal({ visible, usage, actualUsage, run, onClose, onOpenSettings }: { visible: boolean; usage?: TokenUsage; actualUsage?: TokenUsage; run?: AgentRun; onClose: () => void; onOpenSettings: () => void }) {
+  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>当前对话 Token 统计</Text><Text style={styles.sheetSub}>真实 API usage 会在服务商返回后与本地估算并列显示。</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View>{usage && run ? <><Card style={styles.totalCard}><View style={styles.usageComparison}><UsageTotal label="本地估算" value={usage.totalTokens} color={COLORS.mint} /><View style={styles.usageDivider} /><UsageTotal label="实际消耗" value={actualUsage?.totalTokens} color={COLORS.blue} /></View><Text numberOfLines={2} style={styles.runName}>{run.prompt}</Text></Card><View style={styles.tokenRow}><TokenMetric label="估算输入" value={usage.inputTokens} color={COLORS.amber} /><TokenMetric label="估算输出" value={usage.outputTokens} color={COLORS.mint} /></View>{actualUsage ? <View style={styles.tokenRow}><TokenMetric label="实际输入" value={actualUsage.inputTokens} color={COLORS.blue} /><TokenMetric label="实际输出" value={actualUsage.outputTokens} color={COLORS.blue} /></View> : <View style={styles.usageUnavailable}><MaterialIcons name="cloud-off" size={16} color={COLORS.muted} /><Text style={styles.usageUnavailableText}>此任务未收到服务商的 usage 字段，暂仅显示本地估算。</Text></View>}</> : <Card style={styles.emptyStats}><MaterialIcons name="forum" size={24} color={COLORS.muted} /><Text style={styles.emptyText}>尚无任务对话。运行代理后会在这里显示当前对话的 Token 统计。</Text></Card>}<Text style={styles.statsNote}>实际值仅来自兼容 API 响应的 `usage` 字段；未返回时不会以估算值替代实际账单数据。</Text><PrimaryButton label="查看全部 Token 统计" icon="bar-chart" onPress={onOpenSettings} /></View></View></Modal>;
+}
+
+function UsageTotal({ label, value, color }: { label: string; value?: number; color: string }) {
+  return <View style={styles.usageTotal}><Text style={[styles.totalValue, { color }]}>{value === undefined ? "—" : value.toLocaleString()}</Text><Text style={styles.totalLabel}>{label}</Text></View>;
 }
 
 function TokenMetric({ label, value, color }: { label: string; value: number; color: string }) {
@@ -183,7 +188,10 @@ const styles = StyleSheet.create({
   sheetTitle: { color: COLORS.text, fontSize: 19, fontWeight: "800" },
   sheetSub: { color: COLORS.muted, fontSize: 12, lineHeight: 17, marginTop: 4, maxWidth: 275 },
   closeButton: { alignItems: "center", backgroundColor: "#1A3344", borderRadius: 99, height: 34, justifyContent: "center", width: 34 },
-  totalCard: { alignItems: "center", backgroundColor: "#102C36", borderColor: "#28756E", marginBottom: 12, paddingVertical: 18 },
+  totalCard: { backgroundColor: "#102C36", borderColor: "#28756E", marginBottom: 12, paddingVertical: 18 },
+  usageComparison: { alignItems: "center", flexDirection: "row", justifyContent: "center" },
+  usageTotal: { alignItems: "center", flex: 1 },
+  usageDivider: { backgroundColor: "#28756E", height: 46, width: 1 },
   totalValue: { color: COLORS.mint, fontSize: 31, fontWeight: "800", letterSpacing: -1 },
   totalLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "700", marginTop: 3 },
   runName: { color: COLORS.text, fontSize: 12, fontWeight: "700", marginTop: 11, textAlign: "center" },
@@ -192,6 +200,8 @@ const styles = StyleSheet.create({
   tokenDot: { borderRadius: 99, height: 7, width: 7 },
   tokenMetricLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "700" },
   tokenMetricValue: { color: COLORS.text, flex: 1, fontSize: 15, fontWeight: "800", textAlign: "right" },
+  usageUnavailable: { alignItems: "center", backgroundColor: "#0A1A26", borderColor: COLORS.border, borderRadius: 13, borderWidth: 1, flexDirection: "row", gap: 8, marginBottom: 13, padding: 12 },
+  usageUnavailableText: { color: COLORS.muted, flex: 1, fontSize: 11, lineHeight: 16 },
   statsNote: { color: COLORS.muted, fontSize: 11, lineHeight: 16, marginBottom: 14, marginTop: 1 },
   emptyStats: { alignItems: "center", flexDirection: "row", gap: 10, marginBottom: 13 },
   pressed: { opacity: 0.75, transform: [{ scale: 0.98 }] },

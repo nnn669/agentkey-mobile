@@ -17,6 +17,43 @@ export type TokenUsage = {
   totalTokens: number;
 };
 
+type UsageRecord = Record<string, unknown>;
+
+function isUsageRecord(value: unknown): value is UsageRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readUsageNumber(record: UsageRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.floor(value);
+  }
+  return undefined;
+}
+
+export function parseApiTokenUsage(payload: unknown): TokenUsage | undefined {
+  if (!isUsageRecord(payload)) return undefined;
+  const usage = isUsageRecord(payload.usage)
+    ? payload.usage
+    : isUsageRecord(payload.data) && isUsageRecord(payload.data.usage)
+      ? payload.data.usage
+      : isUsageRecord(payload.metadata) && isUsageRecord(payload.metadata.usage)
+        ? payload.metadata.usage
+        : undefined;
+  if (!usage) return undefined;
+
+  const inputTokens = readUsageNumber(usage, ["prompt_tokens", "input_tokens", "promptTokens", "inputTokens"]);
+  const outputTokens = readUsageNumber(usage, ["completion_tokens", "output_tokens", "completionTokens", "outputTokens"]);
+  const totalTokens = readUsageNumber(usage, ["total_tokens", "totalTokens"]);
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return undefined;
+
+  return {
+    inputTokens: inputTokens ?? Math.max(0, (totalTokens ?? 0) - (outputTokens ?? 0)),
+    outputTokens: outputTokens ?? Math.max(0, (totalTokens ?? 0) - (inputTokens ?? 0)),
+    totalTokens: totalTokens ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+  };
+}
+
 export function estimateTextTokens(text: string) {
   const value = text.trim();
   if (!value) return 0;

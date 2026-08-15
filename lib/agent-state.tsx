@@ -3,7 +3,7 @@ import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 
-import { cooldownUntilAfter, createTokenUsage, getStrategyLabel, isCooldownActive, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy, type TokenUsage } from "@/lib/agent-logic";
+import { cooldownUntilAfter, createTokenUsage, getStrategyLabel, isCooldownActive, parseApiTokenUsage, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy, type TokenUsage } from "@/lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport, type ToolAuthGrant, type ToolAuthScope } from "@/lib/mcp-logic";
 
 export type { ToolAuthGrant, ToolAuthScope } from "@/lib/mcp-logic";
@@ -82,6 +82,7 @@ export type AgentRun = {
   createdAt: string;
   steps: RunStep[];
   tokenUsage?: TokenUsage;
+  actualTokenUsage?: TokenUsage;
 };
 
 export type McpDiagnostic = {
@@ -287,6 +288,18 @@ async function deleteSecret(keyId: string) {
     return;
   }
   await SecureStore.deleteItemAsync(secretStorageKey(keyId));
+}
+
+function getCompletionEndpoint(baseUrl: string) {
+  return `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
+}
+
+function getResponsePreview(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "服务端已完成响应";
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices)) return "服务端已完成响应";
+  const content = (choices[0] as { message?: { content?: unknown } } | undefined)?.message?.content;
+  return typeof content === "string" && content.trim() ? content.trim().replace(/\s+/g, " ").slice(0, 72) : "服务端已完成响应";
 }
 
 export function AgentStateProvider({ children }: PropsWithChildren) {
@@ -659,6 +672,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       ? selectKey(modelKeys.filter((key) => key.id !== selected.id), strategy, selected.id)
       : undefined;
     const usedKey = alternate ?? selected;
+    const provider = providers.find((item) => item.id === model.providerId);
     const matchedMemories = rankMemories(memories, prompt);
     const enabledToolCount = mcpTools.filter((tool) => tool.enabled && mcpServers.some((server) => server.id === tool.serverId && server.enabled)).length;
     setProviders((current) => current.map((provider) => ({
@@ -696,23 +710,44 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
 
     setRuns((current) => [run, ...current].slice(0, 12));
 
-    setTimeout(() => {
-      setRuns((current) =>
-        current.map((item) =>
-          item.id === runId
-            ? {
-                ...item,
-                status: "completed",
-                steps: item.steps.map((step) =>
-                  step.id === "execute" ? { ...step, state: "complete", detail: "演示调用已完成" } : step,
-                ),
-              }
-            : item,
-        ),
-      );
+    void (async () => {
+      let actualTokenUsage: TokenUsage | undefined;
+      let executionDetail = "演示调用已完成（未获得真实 usage）";
+      try {
+        const secret = await readSecret(usedKey.id);
+        if (!provider || provider.protocol !== "OpenAI 兼容" || !secret || provider.baseUrl.includes("example.com")) throw new Error("当前模型未配置可用的真实兼容端点");
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
+        try {
+          const response = await fetch(getCompletionEndpoint(provider.baseUrl), {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+            body: JSON.stringify({ model: model.modelId, messages: [{ role: "user", content: prompt.trim() }] }),
+            signal: controller.signal,
+          });
+          const raw = await response.text();
+          let payload: unknown;
+          try { payload = raw ? JSON.parse(raw) : undefined; } catch { payload = undefined; }
+          if (!response.ok) throw new Error(`服务端返回 HTTP ${response.status}`);
+          actualTokenUsage = parseApiTokenUsage(payload);
+          executionDetail = actualTokenUsage
+            ? `真实调用完成 · 实际 ${actualTokenUsage.totalTokens.toLocaleString()} Token · ${getResponsePreview(payload)}`
+            : "真实调用完成，但服务端未返回可识别的 usage 字段";
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch {
+        await new Promise<void>((resolve) => setTimeout(resolve, 750));
+      }
+      setRuns((current) => current.map((item) => item.id === runId ? {
+        ...item,
+        actualTokenUsage,
+        status: "completed",
+        steps: item.steps.map((step) => step.id === "execute" ? { ...step, state: "complete", detail: executionDetail } : step),
+      } : item));
       setKeys((current) => current.map((key) => (key.id === usedKey.id ? { ...key, usage: key.usage + 1 } : key)));
-    }, 750);
-  }, [defaultModel, keys, mcpServers, mcpTools, memories, rule.strategy]);
+    })();
+  }, [defaultModel, keys, mcpServers, mcpTools, memories, providers, rule.strategy]);
 
   const clearRuns = useCallback(() => setRuns([]), []);
 
