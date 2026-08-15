@@ -80,6 +80,8 @@ export type AgentRun = {
   keySuffix: string;
   usedFallback: boolean;
   createdAt: string;
+  modelId?: string;
+  providerName?: string;
   steps: RunStep[];
   tokenUsage?: TokenUsage;
   actualTokenUsage?: TokenUsage;
@@ -704,6 +706,8 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       keySuffix: usedKey.suffix,
       usedFallback: Boolean(alternate),
       createdAt: new Date().toISOString(),
+      modelId: model.id,
+      providerName: provider?.name,
       steps,
       tokenUsage,
     };

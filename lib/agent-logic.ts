@@ -17,6 +17,24 @@ export type TokenUsage = {
   totalTokens: number;
 };
 
+export type ActualUsageRun = {
+  createdAt: string;
+  modelLabel: string;
+  providerName?: string;
+  actualTokenUsage?: TokenUsage;
+};
+
+export type TokenUsageFilters = {
+  after?: number;
+  modelLabel?: string;
+  providerName?: string;
+};
+
+export type TokenTrendPoint = TokenUsage & {
+  date: string;
+  runCount: number;
+};
+
 type UsageRecord = Record<string, unknown>;
 
 function isUsageRecord(value: unknown): value is UsageRecord {
@@ -76,6 +94,37 @@ export function sumTokenUsage(usages: TokenUsage[]): TokenUsage {
     outputTokens: total.outputTokens + usage.outputTokens,
     totalTokens: total.totalTokens + usage.totalTokens,
   }), { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+}
+
+export function filterActualTokenRuns<T extends ActualUsageRun>(runs: T[], filters: TokenUsageFilters = {}) {
+  return runs.filter((run) => {
+    if (!run.actualTokenUsage) return false;
+    const createdAt = Date.parse(run.createdAt);
+    if (!Number.isFinite(createdAt)) return false;
+    if (filters.after !== undefined && createdAt < filters.after) return false;
+    if (filters.modelLabel && run.modelLabel !== filters.modelLabel) return false;
+    if (filters.providerName && run.providerName !== filters.providerName) return false;
+    return true;
+  });
+}
+
+export function createActualTokenTrend(runs: ActualUsageRun[]): TokenTrendPoint[] {
+  const points = new Map<string, TokenTrendPoint>();
+  for (const run of runs) {
+    if (!run.actualTokenUsage) continue;
+    const time = Date.parse(run.createdAt);
+    if (!Number.isFinite(time)) continue;
+    const date = new Date(time).toISOString().slice(0, 10);
+    const current = points.get(date) ?? { date, inputTokens: 0, outputTokens: 0, totalTokens: 0, runCount: 0 };
+    points.set(date, {
+      date,
+      inputTokens: current.inputTokens + run.actualTokenUsage.inputTokens,
+      outputTokens: current.outputTokens + run.actualTokenUsage.outputTokens,
+      totalTokens: current.totalTokens + run.actualTokenUsage.totalTokens,
+      runCount: current.runCount + 1,
+    });
+  }
+  return [...points.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export function isCooldownActive(cooldownUntil?: string, now = Date.now()) {

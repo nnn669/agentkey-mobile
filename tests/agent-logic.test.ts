@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cooldownUntilAfter, createTokenUsage, estimateTextTokens, getStrategyLabel, isCooldownActive, parseApiTokenUsage, remainingCooldownSeconds, selectKey, shouldAutoCooldown, sumTokenUsage, type KeyCandidate } from "../lib/agent-logic";
+import { cooldownUntilAfter, createActualTokenTrend, createTokenUsage, estimateTextTokens, filterActualTokenRuns, getStrategyLabel, isCooldownActive, parseApiTokenUsage, remainingCooldownSeconds, selectKey, shouldAutoCooldown, sumTokenUsage, type KeyCandidate } from "../lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
 
 const pool: KeyCandidate[] = [
@@ -95,6 +95,18 @@ describe("Token 统计", () => {
     expect(parseApiTokenUsage({ choices: [] })).toBeUndefined();
     expect(parseApiTokenUsage({ usage: { total_tokens: -1 } })).toBeUndefined();
     expect(parseApiTokenUsage({ usage: { unknown: 10 } })).toBeUndefined();
+  });
+
+  it("按日期、模型与供应商筛选真实用量，并聚合为有序趋势", () => {
+    const runs = [
+      { createdAt: "2026-08-10T01:00:00.000Z", modelLabel: "A", providerName: "Alpha", actualTokenUsage: { inputTokens: 4, outputTokens: 6, totalTokens: 10 } },
+      { createdAt: "2026-08-10T10:00:00.000Z", modelLabel: "A", providerName: "Alpha", actualTokenUsage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } },
+      { createdAt: "2026-08-11T01:00:00.000Z", modelLabel: "B", providerName: "Beta", actualTokenUsage: { inputTokens: 7, outputTokens: 8, totalTokens: 15 } },
+      { createdAt: "2026-08-11T02:00:00.000Z", modelLabel: "B", providerName: "Beta" },
+    ];
+    const filtered = filterActualTokenRuns(runs, { after: Date.parse("2026-08-10T00:00:00.000Z"), modelLabel: "A", providerName: "Alpha" });
+    expect(filtered).toHaveLength(2);
+    expect(createActualTokenTrend(filtered)).toEqual([{ date: "2026-08-10", inputTokens: 6, outputTokens: 9, totalTokens: 15, runCount: 2 }]);
   });
 });
 
