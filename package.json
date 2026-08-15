@@ -1,7 +1,7 @@
 {
-  "name": "app-template",
+  "name": "agentkey-mobile",
   "version": "1.0.0",
-  "private": true,
+  "private": false,
   "main": "expo-router/entry",
   "scripts": {
     "dev": "concurrently -k \"pnpm dev:server\" \"pnpm dev:metro\"",
