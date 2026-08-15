@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { cooldownUntilAfter, createActualTokenTrend, createTokenUsage, estimateTextTokens, filterActualTokenRuns, getStrategyLabel, isCooldownActive, parseApiTokenUsage, remainingCooldownSeconds, selectKey, shouldAutoCooldown, sumTokenUsage, type KeyCandidate } from "../lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
-import { createSandboxWorkspace, deriveSandboxCommandProposal, executeSandboxCommand, isSandboxCommandAllowed } from "../lib/sandbox-shell";
+import { createSandboxWorkspace, deriveSandboxCommandProposal, executeSandboxCommand, isSandboxCommandAllowed, isSandboxCommandAutoApprovable } from "../lib/sandbox-shell";
 
 const pool: KeyCandidate[] = [
   { id: "primary", priority: 1, usage: 18, status: "healthy" },
@@ -184,6 +184,15 @@ describe("应用内受限沙盒终端", () => {
     expect(executeSandboxCommand("cat ../secret", workspace).ok).toBe(false);
     expect(executeSandboxCommand("ls | curl example.com", workspace).ok).toBe(false);
     expect(executeSandboxCommand("cat /etc/passwd", workspace).ok).toBe(false);
+  });
+
+  it("仅将无参数 pwd 与 ls 识别为可自动批准的低风险命令", () => {
+    expect(isSandboxCommandAutoApprovable("pwd")).toBe(true);
+    expect(isSandboxCommandAutoApprovable("ls")).toBe(true);
+    expect(isSandboxCommandAutoApprovable("PWD")).toBe(true);
+    expect(isSandboxCommandAutoApprovable("ls -la")).toBe(false);
+    expect(isSandboxCommandAutoApprovable("cat README.md")).toBe(false);
+    expect(isSandboxCommandAutoApprovable("pwd | cat")).toBe(false);
   });
 
   it("仅从明确的终端请求或安全的中文意图生成模型命令提案", () => {

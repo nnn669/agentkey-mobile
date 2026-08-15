@@ -5,7 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 
 import { cooldownUntilAfter, createTokenUsage, getStrategyLabel, isCooldownActive, parseApiTokenUsage, selectKey, shouldAutoCooldown, type CooldownReason, type KeyStatus, type RoutingStrategy, type TokenUsage } from "@/lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, type McpToolDescriptor, type McpTransport, type ToolAuthGrant, type ToolAuthScope } from "@/lib/mcp-logic";
-import { createSandboxWorkspace, deriveSandboxCommandProposal, executeSandboxCommand, isSandboxCommandAllowed, type SandboxWorkspace } from "@/lib/sandbox-shell";
+import { createSandboxWorkspace, deriveSandboxCommandProposal, executeSandboxCommand, isSandboxCommandAllowed, isSandboxCommandAutoApprovable, type SandboxWorkspace } from "@/lib/sandbox-shell";
 
 export type { ToolAuthGrant, ToolAuthScope } from "@/lib/mcp-logic";
 
@@ -146,6 +146,7 @@ export type SandboxCommand = {
   runId?: string;
   output?: string;
   exitCode?: number;
+  approval?: "manual" | "automatic";
 };
 
 type PersistedState = {
@@ -160,6 +161,7 @@ type PersistedState = {
   toolAuthGrants: ToolAuthGrant[];
   sandboxWorkspace: SandboxWorkspace;
   sandboxCommands: SandboxCommand[];
+  sandboxAutoApproveLowRisk: boolean;
 };
 
 const seedProviders: ApiProvider[] = [
@@ -264,6 +266,7 @@ type AgentStateValue = {
   toolAuthGrants: ToolAuthGrant[];
   sandboxWorkspace: SandboxWorkspace;
   sandboxCommands: SandboxCommand[];
+  sandboxAutoApproveLowRisk: boolean;
   addMcpServer: (input: { name: string; transport: McpTransport; endpoint: string; messageEndpoint?: string; authToken?: string }) => Promise<boolean>;
   removeMcpServer: (serverId: string) => Promise<void>;
   testMcpServer: (serverId: string) => Promise<void>;
@@ -275,6 +278,7 @@ type AgentStateValue = {
   requestSandboxCommand: (command: string, reason: string, runId?: string) => string | undefined;
   approveSandboxCommand: (commandId: string) => void;
   rejectSandboxCommand: (commandId: string) => void;
+  setSandboxAutoApproveLowRisk: (enabled: boolean) => void;
   addMemory: (input: { title: string; content: string; category: string }) => void;
   updateMemory: (memoryId: string, patch: Partial<Pick<MemoryEntry, "title" | "content" | "category" | "enabled">>) => void;
   removeMemory: (memoryId: string) => void;
@@ -336,6 +340,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
   const [toolAuthGrants, setToolAuthGrants] = useState<ToolAuthGrant[]>([]);
   const [sandboxWorkspace] = useState<SandboxWorkspace>(createSandboxWorkspace);
   const [sandboxCommands, setSandboxCommands] = useState<SandboxCommand[]>([]);
+  const [sandboxAutoApproveLowRisk, setSandboxAutoApproveLowRisk] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -355,6 +360,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
         if (parsed.mcpCalls) setMcpCalls(parsed.mcpCalls);
         if (parsed.toolAuthGrants) setToolAuthGrants(parsed.toolAuthGrants.filter((grant): grant is ToolAuthGrant => Boolean(grant && typeof grant.toolId === "string" && typeof grant.grantedAt === "string" && typeof grant.scope === "string" && isAuthGrantValid(grant as ToolAuthGrant))));
         if (parsed.sandboxCommands) setSandboxCommands(parsed.sandboxCommands.filter((command): command is SandboxCommand => Boolean(command && typeof command.id === "string" && typeof command.command === "string" && typeof command.status === "string")));
+        if (typeof parsed.sandboxAutoApproveLowRisk === "boolean") setSandboxAutoApproveLowRisk(parsed.sandboxAutoApproveLowRisk);
       } finally {
         setHydrated(true);
       }
@@ -366,9 +372,9 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!hydrated) return;
 
-    const payload: PersistedState = { providers, keys, rule, runs, mcpServers, mcpTools, memories, mcpCalls, toolAuthGrants, sandboxWorkspace, sandboxCommands };
+    const payload: PersistedState = { providers, keys, rule, runs, mcpServers, mcpTools, memories, mcpCalls, toolAuthGrants, sandboxWorkspace, sandboxCommands, sandboxAutoApproveLowRisk };
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [hydrated, keys, mcpCalls, mcpServers, mcpTools, memories, providers, rule, runs, sandboxCommands, sandboxWorkspace, toolAuthGrants]);
+  }, [hydrated, keys, mcpCalls, mcpServers, mcpTools, memories, providers, rule, runs, sandboxAutoApproveLowRisk, sandboxCommands, sandboxWorkspace, toolAuthGrants]);
 
   useEffect(() => {
     const restoreExpiredKeys = () => {
@@ -660,16 +666,26 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       setSandboxCommands((current) => [blockedCommand, ...current].slice(0, 60));
       return undefined;
     }
+    if (sandboxAutoApproveLowRisk && isSandboxCommandAutoApprovable(command)) {
+      const execution = executeSandboxCommand(command, sandboxWorkspace);
+      const automaticCommand: SandboxCommand = { ...baseCommand, status: execution.ok ? "completed" : "blocked", approval: "automatic", output: execution.output.slice(0, 900), exitCode: execution.exitCode };
+      setSandboxCommands((current) => [automaticCommand, ...current].slice(0, 60));
+      if (runId) setRuns((current) => current.map((run) => run.id === runId ? {
+        ...run,
+        steps: run.steps.map((step) => step.id === "sandbox" ? { ...step, title: execution.ok ? "沙盒终端已自动执行" : "沙盒终端已拦截", detail: `$ ${command.trim()} · 低风险自动批准 · ${execution.output.replace(/\s+/g, " ").slice(0, 72)}`, state: execution.ok ? "complete" : "warning" } : step),
+      } : run));
+      return id;
+    }
     const pendingCommand: SandboxCommand = { ...baseCommand, status: "pending" };
     setSandboxCommands((current) => [pendingCommand, ...current].slice(0, 60));
     return id;
-  }, []);
+  }, [sandboxAutoApproveLowRisk, sandboxWorkspace]);
 
   const approveSandboxCommand = useCallback((commandId: string) => {
     const command = sandboxCommands.find((item) => item.id === commandId && item.status === "pending");
     if (!command) return;
     const execution = executeSandboxCommand(command.command, sandboxWorkspace);
-    setSandboxCommands((current) => current.map((item) => item.id === commandId ? { ...item, status: execution.ok ? "completed" : "blocked", output: execution.output.slice(0, 900), exitCode: execution.exitCode } : item));
+    setSandboxCommands((current) => current.map((item) => item.id === commandId ? { ...item, status: execution.ok ? "completed" : "blocked", approval: "manual", output: execution.output.slice(0, 900), exitCode: execution.exitCode } : item));
     if (command.runId) setRuns((current) => current.map((run) => run.id === command.runId ? {
       ...run,
       steps: run.steps.map((step) => step.id === "sandbox" ? { ...step, title: execution.ok ? "沙盒终端已完成" : "沙盒终端已拦截", detail: `$ ${command.command} · ${execution.output.replace(/\s+/g, " ").slice(0, 92)}`, state: execution.ok ? "complete" : "warning" } : step),
@@ -901,6 +917,7 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       toolAuthGrants,
       sandboxWorkspace,
       sandboxCommands,
+      sandboxAutoApproveLowRisk,
       addMcpServer,
       removeMcpServer,
       testMcpServer,
@@ -912,13 +929,14 @@ export function AgentStateProvider({ children }: PropsWithChildren) {
       requestSandboxCommand,
       approveSandboxCommand,
       rejectSandboxCommand,
+      setSandboxAutoApproveLowRisk,
       addMemory,
       updateMemory,
       removeMemory,
       exportMemories,
       importMemories,
     }),
-    [addKey, addMcpServer, addMemory, addModel, addProvider, approveSandboxCommand, callMcpTool, checkToolAuth, clearRuns, cycleKeyStatus, defaultModel, exportMemories, grantToolAuth, hydrated, importMemories, keys, mcpCalls, mcpServers, mcpTools, memories, models, providers, rejectSandboxCommand, removeKey, removeMcpServer, removeMemory, removeModel, removeProvider, requestSandboxCommand, revokeToolAuth, rule, runAgent, runs, sandboxCommands, sandboxWorkspace, testMcpServer, testProvider, toggleMcpTool, toggleProvider, toolAuthGrants, updateMemory, updateModelRouting, updateRule],
+    [addKey, addMcpServer, addMemory, addModel, addProvider, approveSandboxCommand, callMcpTool, checkToolAuth, clearRuns, cycleKeyStatus, defaultModel, exportMemories, grantToolAuth, hydrated, importMemories, keys, mcpCalls, mcpServers, mcpTools, memories, models, providers, rejectSandboxCommand, removeKey, removeMcpServer, removeMemory, removeModel, removeProvider, requestSandboxCommand, revokeToolAuth, rule, runAgent, runs, sandboxAutoApproveLowRisk, sandboxCommands, sandboxWorkspace, testMcpServer, testProvider, toggleMcpTool, toggleProvider, toolAuthGrants, updateMemory, updateModelRouting, updateRule],
   );
 
   return <AgentStateContext.Provider value={value}>{children}</AgentStateContext.Provider>;

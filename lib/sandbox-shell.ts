@@ -21,6 +21,7 @@ export type SandboxCommandProposal = {
 };
 
 export const SANDBOX_ALLOWED_COMMANDS = ["help", "pwd", "ls", "cat", "echo", "grep", "date"] as const;
+export const SANDBOX_AUTO_APPROVE_COMMANDS = ["pwd", "ls"] as const;
 
 const blockedSyntax = /[;&|`$><\\\n\r]/;
 
@@ -50,6 +51,11 @@ export function isSandboxCommandAllowed(command: string) {
   if (!trimmed || blockedSyntax.test(trimmed)) return false;
   const [program] = trimmed.split(/\s+/, 1);
   return (SANDBOX_ALLOWED_COMMANDS as readonly string[]).includes(program.toLowerCase());
+}
+
+export function isSandboxCommandAutoApprovable(command: string) {
+  const trimmed = command.trim();
+  return isSandboxCommandAllowed(trimmed) && (SANDBOX_AUTO_APPROVE_COMMANDS as readonly string[]).includes(trimmed.toLowerCase());
 }
 
 export function executeSandboxCommand(command: string, workspace: SandboxWorkspace, now = new Date()): SandboxCommandResult {
