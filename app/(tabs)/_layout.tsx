@@ -34,6 +34,7 @@ export default function TabLayout() {
       <Tabs.Screen name="mcp" options={{ title: "MCP", tabBarIcon: ({ color }) => <IconSymbol size={25} name="wrench.and.screwdriver.fill" color={color} /> }} />
       <Tabs.Screen name="memory" options={{ title: "记忆", tabBarIcon: ({ color }) => <IconSymbol size={25} name="brain.head.profile" color={color} /> }} />
       <Tabs.Screen name="settings" options={{ href: null }} />
+      <Tabs.Screen name="shell" options={{ href: null }} />
       <Tabs.Screen name="keys" options={{ href: null }} />
       <Tabs.Screen name="rules" options={{ href: null }} />
     </Tabs>

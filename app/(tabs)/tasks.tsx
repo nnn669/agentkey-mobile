@@ -1,21 +1,27 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { Badge, Card, COLORS, PrimaryButton } from "@/components/agent-ui";
 import { ScreenContainer } from "@/components/screen-container";
 import { createTokenUsage, type TokenUsage } from "@/lib/agent-logic";
-import { useAgentState, type AgentRun } from "@/lib/agent-state";
+import { useAgentState, type AgentRun, type SandboxCommand } from "@/lib/agent-state";
 
 export default function TasksScreen() {
   const router = useRouter();
-  const { defaultModel, models, runs, runAgent, clearRuns, updateRule } = useAgentState();
+  const { approveSandboxCommand, defaultModel, models, rejectSandboxCommand, runs, runAgent, sandboxCommands, clearRuns, updateRule } = useAgentState();
   const [prompt, setPrompt] = useState("分析当前 API 密钥池，并给出稳定性摘要");
   const [statsVisible, setStatsVisible] = useState(false);
+  const [terminalReviewVisible, setTerminalReviewVisible] = useState(false);
   const running = useMemo(() => runs.some((run) => run.status === "running"), [runs]);
   const currentUsage = useMemo(() => runs[0] ? getRunTokenUsage(runs[0]) : undefined, [runs]);
   const currentActualUsage = runs[0]?.actualTokenUsage;
+  const pendingSandboxCommand = useMemo(() => sandboxCommands.find((command) => command.status === "pending"), [sandboxCommands]);
+
+  useEffect(() => {
+    if (pendingSandboxCommand) setTerminalReviewVisible(true);
+  }, [pendingSandboxCommand]);
 
   const submit = () => {
     if (!prompt.trim()) return;
@@ -34,7 +40,10 @@ export default function TasksScreen() {
           <View>
             <View style={styles.titleRow}>
               <View style={styles.titleText}><Text style={styles.title}>代理任务</Text><Text style={styles.subtitle}>在本地演示模式中规划、路由并记录执行步骤。</Text></View>
-              <Pressable accessibilityLabel="查看当前对话 Token 统计" onPress={() => setStatsVisible(true)} style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}><MaterialIcons name="settings" size={20} color={COLORS.mint} /></Pressable>
+              <View style={styles.titleActions}>
+                <Pressable accessibilityLabel="打开受限沙盒终端" onPress={() => router.push("/shell" as never)} style={({ pressed }) => [styles.terminalButton, pressed && styles.pressed]}><MaterialIcons name="terminal" size={20} color={COLORS.amber} /></Pressable>
+                <Pressable accessibilityLabel="查看当前对话 Token 统计" onPress={() => setStatsVisible(true)} style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}><MaterialIcons name="settings" size={20} color={COLORS.mint} /></Pressable>
+              </View>
             </View>
 
             <Card style={styles.composerCard}>
@@ -59,7 +68,7 @@ export default function TasksScreen() {
                 textAlignVertical="top"
                 style={styles.input}
               />
-              <Text style={styles.helper}>输入“备用”或“故障”可模拟主密钥失败后的自动切换。</Text>
+              <Text style={styles.helper}>输入“备用”或“故障”可模拟主密钥失败后的自动切换。输入“终端执行: ls”可让模型请求受限沙盒命令。</Text>
               <PrimaryButton label={running ? "正在执行演示" : "运行代理"} icon="play-arrow" onPress={submit} disabled={!prompt.trim() || running || !defaultModel} />
             </Card>
 
@@ -85,6 +94,7 @@ export default function TasksScreen() {
         }
       />
       <TokenStatsModal actualUsage={currentActualUsage} usage={currentUsage} run={runs[0]} onClose={() => setStatsVisible(false)} onOpenSettings={() => { setStatsVisible(false); router.push("/settings" as never); }} visible={statsVisible} />
+      <SandboxAuthorizationModal command={pendingSandboxCommand} onApprove={() => { if (pendingSandboxCommand) approveSandboxCommand(pendingSandboxCommand.id); setTerminalReviewVisible(false); }} onClose={() => setTerminalReviewVisible(false)} onReject={() => { if (pendingSandboxCommand) rejectSandboxCommand(pendingSandboxCommand.id); setTerminalReviewVisible(false); }} visible={terminalReviewVisible && Boolean(pendingSandboxCommand)} />
     </ScreenContainer>
   );
 }
@@ -103,6 +113,11 @@ function UsageTotal({ label, value, color }: { label: string; value?: number; co
 
 function TokenMetric({ label, value, color }: { label: string; value: number; color: string }) {
   return <View style={styles.tokenMetric}><View style={[styles.tokenDot, { backgroundColor: color }]} /><Text style={styles.tokenMetricLabel}>{label}</Text><Text style={styles.tokenMetricValue}>{value.toLocaleString()}</Text></View>;
+}
+
+function SandboxAuthorizationModal({ visible, command, onApprove, onReject, onClose }: { visible: boolean; command?: SandboxCommand; onApprove: () => void; onReject: () => void; onClose: () => void }) {
+  if (!command) return null;
+  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}><View style={styles.overlay}><View style={styles.sheet}><View style={styles.handle} /><View style={styles.sheetHeader}><View><Text style={styles.sheetTitle}>模型请求沙盒命令</Text><Text style={styles.sheetSub}>该命令只会在应用内的虚拟工作区执行，不访问设备系统、网络、文件或密钥。</Text></View><Pressable onPress={onClose} style={styles.closeButton}><MaterialIcons name="close" size={20} color={COLORS.text} /></Pressable></View><View style={styles.terminalRequest}><View style={styles.terminalRequestIcon}><MaterialIcons name="terminal" size={19} color={COLORS.amber} /></View><Text selectable style={styles.terminalCommand}>$ {command.command}</Text></View><Text style={styles.reasonLabel}>模型说明</Text><Text style={styles.reasonText}>{command.reason}</Text><View style={styles.sandboxLimit}><MaterialIcons name="shield" size={16} color={COLORS.mint} /><Text style={styles.sandboxLimitText}>仅允许 help、pwd、ls、cat、echo、grep、date；管道、重定向、写入、网络和系统命令均会拦截。</Text></View><PrimaryButton label="允许本次执行" icon="play-arrow" onPress={onApprove} /><Pressable onPress={onReject} style={styles.rejectCommandButton}><Text style={styles.rejectCommandText}>拒绝执行</Text></Pressable></View></View></Modal>;
 }
 
 function RunCard({ run }: { run: AgentRun }) {
@@ -145,9 +160,11 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 32 },
   titleRow: { alignItems: "flex-start", flexDirection: "row", justifyContent: "space-between" },
   titleText: { flex: 1, paddingRight: 12 },
+  titleActions: { flexDirection: "row", gap: 8 },
   title: { color: COLORS.text, fontSize: 28, fontWeight: "800", letterSpacing: -0.7 },
   subtitle: { color: COLORS.muted, fontSize: 13, lineHeight: 19, marginTop: 5, maxWidth: 310 },
   settingsButton: { alignItems: "center", backgroundColor: "#163D3C", borderColor: "#28756E", borderRadius: 13, borderWidth: 1, height: 42, justifyContent: "center", width: 42 },
+  terminalButton: { alignItems: "center", backgroundColor: "#382C16", borderColor: "#8A6725", borderRadius: 13, borderWidth: 1, height: 42, justifyContent: "center", width: 42 },
   composerCard: { marginBottom: 25, marginTop: 18 },
   modelRow: { alignItems: "center", flexDirection: "row", marginBottom: 14 },
   modelMark: { alignItems: "center", backgroundColor: "#163D3C", borderRadius: 12, height: 38, justifyContent: "center", marginRight: 10, width: 38 },
@@ -202,6 +219,15 @@ const styles = StyleSheet.create({
   tokenMetricValue: { color: COLORS.text, flex: 1, fontSize: 15, fontWeight: "800", textAlign: "right" },
   usageUnavailable: { alignItems: "center", backgroundColor: "#0A1A26", borderColor: COLORS.border, borderRadius: 13, borderWidth: 1, flexDirection: "row", gap: 8, marginBottom: 13, padding: 12 },
   usageUnavailableText: { color: COLORS.muted, flex: 1, fontSize: 11, lineHeight: 16 },
+  terminalRequest: { alignItems: "center", backgroundColor: "#0A1A26", borderColor: "#8A6725", borderRadius: 13, borderWidth: 1, flexDirection: "row", gap: 10, marginBottom: 14, padding: 13 },
+  terminalRequestIcon: { alignItems: "center", backgroundColor: "#382C16", borderRadius: 8, height: 30, justifyContent: "center", width: 30 },
+  terminalCommand: { color: COLORS.text, flex: 1, fontFamily: "monospace", fontSize: 13, fontWeight: "700" },
+  reasonLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "800", marginBottom: 4 },
+  reasonText: { color: COLORS.text, fontSize: 12, lineHeight: 18, marginBottom: 14 },
+  sandboxLimit: { alignItems: "flex-start", backgroundColor: "#102C36", borderColor: "#28756E", borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 8, marginBottom: 14, padding: 11 },
+  sandboxLimitText: { color: COLORS.muted, flex: 1, fontSize: 11, lineHeight: 16 },
+  rejectCommandButton: { alignItems: "center", marginTop: 12, paddingVertical: 8 },
+  rejectCommandText: { color: "#FF6D6D", fontSize: 13, fontWeight: "800" },
   statsNote: { color: COLORS.muted, fontSize: 11, lineHeight: 16, marginBottom: 14, marginTop: 1 },
   emptyStats: { alignItems: "center", flexDirection: "row", gap: 10, marginBottom: 13 },
   pressed: { opacity: 0.75, transform: [{ scale: 0.98 }] },

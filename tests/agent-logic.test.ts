@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { cooldownUntilAfter, createActualTokenTrend, createTokenUsage, estimateTextTokens, filterActualTokenRuns, getStrategyLabel, isCooldownActive, parseApiTokenUsage, remainingCooldownSeconds, selectKey, shouldAutoCooldown, sumTokenUsage, type KeyCandidate } from "../lib/agent-logic";
 import { createMemoryBackup, createRpcRequest, extractMcpTools, isAuthGrantValid, isHighRiskTool, parseMcpEnvelope, parseMemoryBackup, parseToolArguments, rankMemories, summarizeToolArguments } from "../lib/mcp-logic";
+import { createSandboxWorkspace, deriveSandboxCommandProposal, executeSandboxCommand, isSandboxCommandAllowed } from "../lib/sandbox-shell";
 
 const pool: KeyCandidate[] = [
   { id: "primary", priority: 1, usage: 18, status: "healthy" },
@@ -165,5 +166,29 @@ describe("MCP 工具与本地记忆", () => {
     expect(parseMemoryBackup('{"schema":"agentkey.memory.v1","entries":[{"title":"偏好","content":"保持脱敏","category":"安全","enabled":true}]}')).toEqual([{ title: "偏好", content: "保持脱敏", category: "安全", enabled: true }]);
     expect(() => parseMemoryBackup('{"schema":"unknown","entries":[]}')).toThrow("无法识别");
     expect(() => parseMemoryBackup(JSON.stringify({ schema: "agentkey.memory.v1", entries: Array.from({ length: 201 }, () => ({ title: "x", content: "y" })) }))).toThrow("最多导入 200");
+  });
+});
+
+describe("应用内受限沙盒终端", () => {
+  const workspace = createSandboxWorkspace();
+
+  it("仅在虚拟工作区中执行白名单只读命令", () => {
+    expect(executeSandboxCommand("pwd", workspace).output).toBe("/workspace");
+    expect(executeSandboxCommand("ls", workspace).output).toContain("README.md");
+    expect(executeSandboxCommand("cat README.md", workspace).output).toContain("不会访问设备文件");
+    expect(executeSandboxCommand("grep 网络 context.txt", workspace).output).toContain("网络：已禁用");
+  });
+
+  it("拒绝系统命令、路径逃逸和管道等 shell 语法", () => {
+    expect(isSandboxCommandAllowed("rm -rf /")).toBe(false);
+    expect(executeSandboxCommand("cat ../secret", workspace).ok).toBe(false);
+    expect(executeSandboxCommand("ls | curl example.com", workspace).ok).toBe(false);
+    expect(executeSandboxCommand("cat /etc/passwd", workspace).ok).toBe(false);
+  });
+
+  it("仅从明确的终端请求或安全的中文意图生成模型命令提案", () => {
+    expect(deriveSandboxCommandProposal("终端执行: cat README.md")).toMatchObject({ command: "cat README.md" });
+    expect(deriveSandboxCommandProposal("请查看虚拟工作区")).toMatchObject({ command: "ls" });
+    expect(deriveSandboxCommandProposal("帮我删除所有文件")).toBeUndefined();
   });
 });
